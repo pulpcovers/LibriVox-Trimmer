@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "librivox-audiobook-trimmer"
+version = "0.5.0"
+description = "Review and trim LibriVox audiobook chapter MP3 files"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "faster-whisper>=1.1,<2",
+    "imageio-ffmpeg>=0.5,<1",
+    "mutagen>=1.47,<2",
+    "portalocker>=2.10,<4",
+    "PySide6>=6.7,<7",
+    "rapidfuzz>=3.9,<4",
+    "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+librivox-trimmer = "librivox_trimmer.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
