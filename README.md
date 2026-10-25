@@ -22,21 +22,77 @@ and preview uncertain boundaries before exporting.
 This repository contains the Python source; packaged desktop installers are not
 currently published.
 
-## Install and Run
+## Install and Test on Windows
+
+The steps below install the app from its source code. You do not need Git, and
+you do not need to install FFmpeg separately.
+
+### 1. Install Python
+
+Open PowerShell and install Python 3.13 with Windows Package Manager:
 
 ```powershell
-py -3.10 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-python -m librivox_trimmer
+winget install --id Python.Python.3.13 --exact
 ```
 
-The FFmpeg executable is provided by `imageio-ffmpeg`; a separate FFmpeg
-installation is not required. The speech model downloads on first use and is
-cached in the per-user application data folder.
+If `winget` is unavailable, install Python 3.10 or later from
+[python.org](https://www.python.org/downloads/). During setup, enable
+**Add python.exe to PATH** if the installer offers it. Then check that Python
+is available:
 
-Run tests with `pytest`.
+```powershell
+py -3 --version
+```
+
+It should print Python 3.10 or later. If Windows says `py` is not recognized,
+rerun the Python installer and include the Python launcher.
+
+### 2. Download the app
+
+1. Open this repository on GitHub.
+2. Select the green **Code** button, then **Download ZIP**.
+3. In File Explorer, right-click the downloaded ZIP and choose **Extract All**.
+4. Open the extracted `LibriVox-Trimmer` folder in File Explorer.
+5. Open a terminal in that folder. On Windows 11, right-click an empty area in
+  the folder and choose **Open in Terminal**. Alternatively, click File
+  Explorer's address bar, type `powershell`, and press Enter.
+6. Check that the terminal is in the project folder by running `dir`. The file
+  list should include `pyproject.toml`.
+
+### 3. Install the app dependencies
+
+Copy and run these commands in PowerShell, one at a time:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+The first command creates a private Python environment in the project folder.
+The next commands install the app and its test tools. Installation can take a
+few minutes. FFmpeg is included through `imageio-ffmpeg`.
+
+### 4. Start the app
+
+```powershell
+.\.venv\Scripts\python.exe -m librivox_trimmer
+```
+
+The desktop window should open. On the first analysis, the English speech model
+downloads automatically; this requires an internet connection and may take a
+few minutes. The model is cached in your Windows user data folder for later use.
+
+### 5. Run the automated tests
+
+In the same terminal, run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Pytest prints a summary when the tests finish. A successful run reports all tests
+as passed; the number can change as the project evolves.
 
 ## Using the App
 
