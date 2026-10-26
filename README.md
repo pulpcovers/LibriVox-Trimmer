@@ -113,6 +113,9 @@ Review the Intro and Outro fields and listen to the previews before exporting.
 Chapters marked **Review intro** or **Review outro** need extra attention. Hover
 over a marked chapter to see the reason. These warnings are saved with the
 project. Re-running analysis updates warnings for the sections that were checked.
+On the first loaded track, unique spoken title or introduction text before the
+LibriVox notice is kept; an earlier announcement can be removed when it is
+repeated after the notice.
 
 ### Preview and Export
 
@@ -131,9 +134,11 @@ from** and **Resume audio at** control the opening cut. **End narration at** and
 **Retain book ending from** control the outro. A retained book ending is optional.
 
 Exports use MP3 stream copy and restore ID3 tags. MP3 frame boundaries limit cut
-precision, so listen to uncertain transitions. Numbered endings such as **End of
-Volume XX** and **End of Book 2, Chapter 3** are recognized near the end of a
-track; generic phrases such as "The End" are not used as cut markers.
+precision, so listen to uncertain transitions. Outro markers include explicit
+chapter, section, introduction, and prologue endings. Numbered endings such as
+**End of Part XX**, **End of Volume XX**, and **End of Book 2, Chapter 3** are
+also recognized near the end of a track; generic phrases such as "The End" are
+not used as cut markers.
 
 ## Settings
 

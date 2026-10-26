@@ -21,6 +21,10 @@ OUTRO_PHRASES = (
     "end of the chapter",
     "end of section",
     "end of the section",
+    "end of introduction",
+    "end of the introduction",
+    "end of prologue",
+    "end of the prologue",
     "end of the book",
     "read by",
     "recording by",
@@ -232,7 +236,7 @@ def detect_intro_boundary(
     )
     removal_start = 0.0
     has_retained_credit = retain_reader_credit and any(credit.end <= notice_start for credit in credits)
-    if (has_chapter_announcement or has_retained_credit) and preceding_words:
+    if (has_chapter_announcement or has_retained_credit or retain_reader_credit) and preceding_words:
         previous_end = preceding_words[-1].end
         removal_start = previous_end + max(0.0, notice_start - previous_end) / 2
     keep_time = max(0.0, notice_end + safety_gap_seconds)
@@ -262,7 +266,7 @@ def _structured_numbered_outro_matches(
         if tokens[label_index].text == "the":
             label_index += 1
         label = tokens[label_index].text
-        if label not in {"book", "volume"} or label_index + 1 >= len(tokens):
+        if label not in {"book", "volume", "part"} or label_index + 1 >= len(tokens):
             continue
         if tokens[index].start < duration_seconds - STRUCTURED_OUTRO_LOOKBACK_SECONDS:
             continue
@@ -474,7 +478,11 @@ def detect_final_chapter_outro(
                         ending.start, title.end, min(ending.score, title.score),
                     ))
         all_chapter_matches.extend(_find_phrase_matches(
-            transcript, ("end of chapter", "end of the chapter", "end of section", "end of the section"), threshold=88,
+            transcript,
+            ("end of chapter", "end of the chapter", "end of section", "end of the section",
+             "end of introduction", "end of the introduction", "end of prologue",
+             "end of the prologue"),
+            threshold=88,
         ))
         for position, (current, following) in enumerate(zip(tokens, tokens[1:])):
             number = following.text

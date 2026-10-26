@@ -70,6 +70,16 @@ def test_first_chapter_keeps_richer_repeated_announcement_after_notice():
     assert ordinary.intro.removal_start_seconds == 0
 
 
+def test_first_chapter_preserves_unique_title_before_notice():
+    title = make_words("Introduction to the Goddess of Atvatabar", start=0)
+    notice = make_words("This is a LibriVox recording", start=5)
+
+    result = detect_boundaries(title + notice, [], is_first_chapter=True)
+
+    assert result.intro is not None
+    assert title[-1].end < result.intro.removal_start_seconds < notice[0].start
+
+
 def test_first_chapter_does_not_drop_unique_author_or_different_chapter():
     before = make_words("Chapter one The Mad King by Edgar Rice Burroughs")
     notice = make_words("This is a LibriVox recording", start=7)
@@ -259,13 +269,31 @@ def test_section_endings_are_outro_markers():
     assert result.outro.keep_time_seconds == closing[3].start
 
 
+@pytest.mark.parametrize("marker", ["End of prologue", "End of the prologue"])
+def test_prologue_endings_are_outro_markers(marker):
+    closing = make_words(f"The story concludes. {marker}", start=70)
+    result = detect_boundaries([], closing)
+    assert result.outro is not None
+    assert result.outro.keep_time_seconds == closing[3].start
+
+
+@pytest.mark.parametrize("marker", ["End of introduction", "End of the introduction"])
+def test_introduction_endings_are_outro_markers(marker):
+    closing = make_words(f"Opening remarks. {marker}", start=70)
+    result = detect_boundaries([], closing)
+    assert result.outro is not None
+    assert result.outro.keep_time_seconds == closing[2].start
+
+
 @pytest.mark.parametrize("marker", [
     "End of Volume XX",
     "End of the Volume 2",
+    "End of Part XX",
+    "End of the Part 2 Chapter 3",
     "End of Book 2 Chapter 3",
     "End of the Book II Chapter three",
 ])
-def test_numbered_book_and_volume_markers_are_outros_near_track_end(marker):
+def test_numbered_book_volume_and_part_markers_are_outros_near_track_end(marker):
     closing = make_words(marker, start=92)
     result = detect_boundaries([], closing, duration_seconds=100)
 
@@ -274,8 +302,8 @@ def test_numbered_book_and_volume_markers_are_outros_near_track_end(marker):
     assert result.outro.matched_text == " ".join(word.text.casefold() for word in closing)
 
 
-@pytest.mark.parametrize("marker", ["End of Book 2 Chapter 3", "End of Volume XX"])
-def test_numbered_book_and_volume_markers_are_ignored_away_from_track_end(marker):
+@pytest.mark.parametrize("marker", ["End of Book 2 Chapter 3", "End of Volume XX", "End of Part 2"])
+def test_numbered_book_volume_and_part_markers_are_ignored_away_from_track_end(marker):
     words = make_words(marker, start=80)
 
     assert detect_boundaries([], words, duration_seconds=100).outro is None
