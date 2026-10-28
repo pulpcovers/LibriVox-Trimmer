@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import threading
 from dataclasses import replace
 
 from PySide6.QtCore import QEvent, QThreadPool, QTimer, Qt, QUrl, Slot
@@ -79,6 +80,7 @@ class MainWindow(QMainWindow):
         self._active_preview_original_text = ""
         self._bulk_results: dict[Path, TrackBoundaryResult] = {}
         self._bulk_errors: dict[Path, str] = {}
+        self._analysis_cancel: threading.Event | None = None
         self._frame_grids: dict[Path, FrameGrid | None] = {}
         self._waveform_request = 0
         self._waveform_workers: set[Worker] = set()
@@ -687,6 +689,8 @@ class MainWindow(QMainWindow):
     def _finish_worker(self) -> None:
         self._active_worker = None
         self._worker_success = None
+        self._analysis_cancel = None
+        self._detect_all_button.setText("Analyse all chapters")
         self._activity_progress.hide()
         self._set_busy(False)
 
@@ -1050,24 +1054,39 @@ class MainWindow(QMainWindow):
         )
 
     def _detect_all(self) -> None:
+        if self._analysis_cancel is not None:
+            self._analysis_cancel.set()
+            self._detect_all_button.setEnabled(False)
+            self._detect_all_button.setText("Cancelling...")
+            self._status.setText("Cancelling analysis after the current step...")
+            return
         if not self._tracks:
             return
         track_paths = list(self._tracks)
         settings = self._project_detection
         self._bulk_results.clear()
         self._bulk_errors.clear()
+        cancel = threading.Event()
         self._start_worker(
             lambda report_progress: analyze_tracks_boundaries(
                 track_paths,
                 progress_callback=report_progress,
                 settings=settings,
+                should_cancel=cancel.is_set,
             ),
-            self._bulk_detection_finished,
+            lambda results: self._bulk_detection_finished(
+                results, cancelled=cancel.is_set(), total=len(track_paths),
+            ),
             f"Preparing to analyze {len(track_paths)} chapters...",
             with_progress=True,
         )
+        self._analysis_cancel = cancel
+        self._detect_all_button.setText("Cancel Analysis")
+        self._detect_all_button.setEnabled(True)
 
-    def _bulk_detection_finished(self, results: list[TrackBoundaryResult]) -> None:
+    def _bulk_detection_finished(
+        self, results: list[TrackBoundaryResult], *, cancelled: bool = False, total: int | None = None,
+    ) -> None:
         for result in results:
             self._apply_bulk_detection_result(result)
 
@@ -1101,6 +1120,12 @@ class MainWindow(QMainWindow):
             f"{len(results)} chapters; {no_match_count} had no matching phrases; "
             f"{len(failures)} failed. Select chapters to review their keep times."
         )
+        if cancelled:
+            summary = (
+                f"Analysis cancelled: kept results for {len(results)} of "
+                f"{total or len(results)} chapters; the chapter in progress was not changed. "
+                f"{suggestion_count} with suggestions, {len(failures)} failed."
+            )
         if failures:
             summary += " First issue: " + failures[0]
         review_count = sum(

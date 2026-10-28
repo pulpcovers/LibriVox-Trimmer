@@ -425,6 +425,31 @@ def test_batch_detection_continues_after_a_chapter_failure(tmp_path, monkeypatch
     assert streamed_results == results
 
 
+def test_cancelling_track_batch_keeps_finished_chapters_only(tmp_path, monkeypatch):
+    paths = [tmp_path / f"chapter0{index}.mp3" for index in range(1, 4)]
+    monkeypatch.setattr(detection, "read_track", lambda path: (600, path.stem, "Reader"))
+    cancel = {"requested": False}
+    calls: list[Path] = []
+
+    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter):
+        calls.append(path)
+        if path == paths[1]:
+            cancel["requested"] = True
+        progress_callback("Transcribing")
+        return detection.BoundaryDetection(intro=None, outro=None)
+
+    monkeypatch.setattr(detection, "analyze_track_boundaries", analyze)
+    progress: list = []
+
+    results = detection.analyze_tracks_boundaries(
+        paths, progress_callback=progress.append, should_cancel=lambda: cancel["requested"],
+    )
+
+    assert calls == paths[:2]
+    assert [result.path for result in results] == paths[:1]
+    assert [item for item in progress if isinstance(item, detection.TrackBoundaryResult)] == results
+
+
 def test_detection_preferences_skip_outro_and_select_model(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(detection, "read_track", lambda _path: (600, "Chapter", "Reader"))

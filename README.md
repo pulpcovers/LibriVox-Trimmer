@@ -110,6 +110,11 @@ chapters** to process the loaded list. The app suggests where to remove intro
 notices and chapter-ending announcements; it does not apply cuts automatically.
 Review the Intro and Outro fields and listen to the previews before exporting.
 
+While all chapters are being analysed, the button changes to **Cancel Analysis**.
+Cancelling keeps and saves the results for chapters that already finished; the
+chapter being analysed at that moment is left unchanged. Cancellation takes
+effect at the next analysis step, so it may take a few seconds.
+
 Chapters marked **Review intro** or **Review outro** need extra attention. Hover
 over a marked chapter to see the reason. These warnings are saved with the
 project. Re-running analysis updates warnings for the sections that were checked.

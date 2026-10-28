@@ -340,9 +340,10 @@ def test_detect_all_button_queues_all_tracks_with_progress(tmp_path, monkeypatch
     window._set_track_controls_enabled(True)
     captured: dict[str, object] = {}
 
-    def analyze_batch(track_paths, *, progress_callback, settings):
+    def analyze_batch(track_paths, *, progress_callback, settings, should_cancel):
         captured["paths"] = track_paths
         captured["settings"] = settings
+        captured["should_cancel"] = should_cancel
         progress_callback("Chapter 1 of 2: chapter01")
         return []
 
@@ -363,10 +364,32 @@ def test_detect_all_button_queues_all_tracks_with_progress(tmp_path, monkeypatch
     assert captured["function"](progress.append) == []
     assert captured["paths"] == paths
     assert captured["settings"] == window._project_detection
-    assert captured["on_success"] == window._bulk_detection_finished
+    assert callable(captured["on_success"])
     assert captured["options"] == {"with_progress": True}
     assert progress == ["Chapter 1 of 2: chapter01"]
     assert "2 chapters" in str(captured["message"])
+    assert window._detect_all_button.text() == "Cancel Analysis"
+    assert window._detect_all_button.isEnabled()
+    assert captured["should_cancel"]() is False
+
+    window._detect_all_button.click()
+
+    assert captured["should_cancel"]() is True
+    assert not window._detect_all_button.isEnabled()
+    window._finish_worker()
+    assert window._detect_all_button.text() == "Analyse all chapters"
+    window.close()
+    application.processEvents()
+
+
+def test_cancelled_bulk_analysis_reports_kept_chapters(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    monkeypatch.setattr(window, "_save_project_without_dialog", lambda: None)
+
+    window._bulk_detection_finished([], cancelled=True, total=3)
+
+    assert window._status.text().startswith("Analysis cancelled: kept results for 0 of 3 chapters")
     window.close()
     application.processEvents()
 

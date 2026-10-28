@@ -442,15 +442,26 @@ def analyze_track_boundaries(
     return detection
 
 
+class AnalysisCancelled(Exception):
+    pass
+
+
 def analyze_tracks_boundaries(
     track_paths: list[Path],
     *,
     progress_callback: Callable[[str | TrackBoundaryResult], None] | None = None,
     settings: DetectionSettings | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[TrackBoundaryResult]:
+    """Analyse tracks in order; on cancel, return only the chapters that finished."""
+    def cancelled() -> bool:
+        return should_cancel is not None and should_cancel()
+
     results: list[TrackBoundaryResult] = []
     total = len(track_paths)
     for index, path in enumerate(track_paths, start=1):
+        if cancelled():
+            break
         try:
             _duration, title, _artist = read_track(path)
         except Exception:
@@ -460,6 +471,8 @@ def analyze_tracks_boundaries(
             progress_callback(f"{prefix} (checking speech model)...")
 
         def report_progress(message: str) -> None:
+            if cancelled():
+                raise AnalysisCancelled
             if progress_callback is not None:
                 progress_callback(f"{prefix}: {message}")
 
@@ -471,10 +484,14 @@ def analyze_tracks_boundaries(
             result = analyze_track_boundaries(
                 path, progress_callback=report_progress, settings=settings, **options,
             )
+        except AnalysisCancelled:
+            break
         except Exception as error:
             track_result = TrackBoundaryResult(path=path, error=str(error))
         else:
             track_result = TrackBoundaryResult(path=path, detection=result)
+        if cancelled():
+            break
         results.append(track_result)
         if progress_callback is not None:
             progress_callback(track_result)
