@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         self._bulk_results: dict[Path, TrackBoundaryResult] = {}
         self._bulk_errors: dict[Path, str] = {}
         self._analysis_cancel: threading.Event | None = None
+        self._save_failure_shown = False
         self._frame_grids: dict[Path, FrameGrid | None] = {}
         self._waveform_request = 0
         self._waveform_workers: set[Worker] = set()
@@ -605,7 +606,22 @@ class MainWindow(QMainWindow):
             try:
                 self._write_project()
             except Exception as error:
-                self._status.setText(f"Could not save review position: {error}")
+                self._report_save_failure(f"Could not save review position: {error}")
+            else:
+                self._save_failure_shown = False
+
+    def _report_save_failure(self, message: str) -> None:
+        self._status.setText(message)
+        # One dialog per failure streak, so editing a field doesn't spawn a popup per keystroke.
+        if self._save_failure_shown:
+            return
+        self._save_failure_shown = True
+        QMessageBox.critical(
+            self,
+            "Project not saved",
+            f"{message}\n\nYour latest changes are not saved to the project file. "
+            "Check that the file is writable and the disk has space.",
+        )
 
     def _clean_up_project(self) -> None:
         if self._project_path is None:
@@ -804,7 +820,9 @@ class MainWindow(QMainWindow):
         try:
             self._write_project()
         except Exception as error:
-            self._status.setText(f"Could not update project: {error}")
+            self._report_save_failure(f"Could not update project: {error}")
+        else:
+            self._save_failure_shown = False
 
     def _selected_path(self) -> Path | None:
         item = self._track_list.currentItem()

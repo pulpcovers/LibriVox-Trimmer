@@ -871,6 +871,37 @@ def test_clean_up_releases_the_media_player_before_deleting(tmp_path, monkeypatc
     application.processEvents()
 
 
+def test_failed_automatic_save_shows_one_error_dialog_until_a_save_succeeds(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window._project_path = tmp_path / "book.lvproj"
+    dialogs = []
+    monkeypatch.setattr(
+        main_window.QMessageBox, "critical", lambda _parent, title, text: dialogs.append((title, text)),
+    )
+    outcome = {"fail": True}
+
+    def write():
+        if outcome["fail"]:
+            raise OSError("disk full")
+
+    monkeypatch.setattr(window, "_write_project", write)
+
+    window._save_project_without_dialog()
+    window._save_project_without_dialog()
+    assert len(dialogs) == 1
+    assert dialogs[0][0] == "Project not saved"
+    assert "disk full" in dialogs[0][1]
+
+    outcome["fail"] = False
+    window._save_project_without_dialog()
+    outcome["fail"] = True
+    window._save_project_without_dialog()
+    assert len(dialogs) == 2
+    window.close()
+    application.processEvents()
+
+
 def test_focusing_a_time_field_selects_it_for_the_waveform(tmp_path, monkeypatch):
     application, window, _grid = _waveform_window(tmp_path, monkeypatch)
     window.show()
