@@ -901,6 +901,33 @@ def test_opening_an_older_project_offers_to_copy_external_chapters(window, tmp_p
     assert load_project(project_path).tracks[0].path.parent == chapters.resolve()
 
 
+def test_labels_showing_file_text_never_render_html(window):
+    window._track_info.setText("<b>bold</b> <img src='x'>")
+
+    assert window._track_info.textFormat() == Qt.TextFormat.PlainText
+    assert window._status.textFormat() == Qt.TextFormat.PlainText
+
+
+def test_unreadable_preferences_warn_the_user_and_fall_back_to_defaults(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(main_window, "projects_dir", lambda: tmp_path / "Projects")
+
+    def broken():
+        raise ValueError("Expecting value: line 1 column 1")
+
+    monkeypatch.setattr(main_window, "load_settings", broken)
+    shown = []
+    monkeypatch.setattr(main_window.QMessageBox, "warning", lambda _p, title, text: shown.append((title, text)))
+    main = MainWindow()
+
+    qapp.processEvents()
+
+    assert main._settings == AppSettings()
+    assert len(shown) == 1 and "Expecting value" in shown[0][1]
+    assert "using defaults" in main._status.text()
+    main.close()
+    qapp.processEvents()
+
+
 def test_focusing_a_time_field_selects_it_for_the_waveform(window, frame_grid, qapp):
     window.show()
     qapp.processEvents()

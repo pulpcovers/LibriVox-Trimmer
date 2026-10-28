@@ -29,6 +29,27 @@ def test_smaller_download_prefers_64kb():
     assert find_archive_url(html, "https://librivox.org/book/", "smaller").endswith("book_64kb_mp3.zip")
 
 
+def test_find_archive_url_ignores_unencrypted_links():
+    html = '<a href="http://archive.org/download/book/book_128kb_mp3.zip">ZIP</a>'
+
+    with pytest.raises(ValueError, match="No Archive.org"):
+        find_archive_url(html, "https://librivox.org/book/")
+
+
+def test_download_refuses_http_addresses_and_downgrading_redirects(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="https"):
+        download_project_archive("http://librivox.org/book/", tmp_path)
+
+    monkeypatch.setattr(
+        librivox_client.requests, "get",
+        lambda *_a, **_k: type("R", (), {
+            "url": "http://librivox.org/book/", "text": "", "raise_for_status": lambda self: None,
+        })(),
+    )
+    with pytest.raises(ValueError, match="redirected"):
+        download_project_archive("https://librivox.org/book/", tmp_path)
+
+
 class FakeResponse:
     def __init__(self, *, url, text="", headers=None, chunks=()):
         self.url = url

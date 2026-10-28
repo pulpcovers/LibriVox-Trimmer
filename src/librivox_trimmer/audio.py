@@ -29,7 +29,17 @@ def resolve_ffmpeg() -> str:
         if path.is_file():
             return str(path)
         raise FileNotFoundError(f"LIBRIVOX_FFMPEG does not point to a file: {path}")
-    return shutil.which("ffmpeg") or get_ffmpeg_exe()
+    try:
+        bundled = get_ffmpeg_exe()
+    except Exception:
+        bundled = None
+    if bundled and Path(bundled).is_file():
+        return bundled
+    found = shutil.which("ffmpeg")
+    # On Windows the search also covers the current folder, which could hold a planted ffmpeg.exe.
+    if found and Path(found).resolve().parent != Path.cwd().resolve():
+        return found
+    raise FileNotFoundError("FFmpeg was not found. Reinstall the app or set LIBRIVOX_FFMPEG.")
 
 
 def extract_analysis_slice(

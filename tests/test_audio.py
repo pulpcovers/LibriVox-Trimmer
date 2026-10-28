@@ -11,6 +11,33 @@ from librivox_trimmer.audio import (
 )
 
 
+def test_resolve_ffmpeg_prefers_bundled_and_never_uses_one_from_the_working_folder(tmp_path, monkeypatch):
+    bundled = tmp_path / "bundled" / "ffmpeg.exe"
+    planted = tmp_path / "work" / "ffmpeg.exe"
+    for path in (bundled, planted):
+        path.parent.mkdir()
+        path.write_bytes(b"")
+    monkeypatch.delenv("LIBRIVOX_FFMPEG", raising=False)
+    monkeypatch.setattr(audio.shutil, "which", lambda _name: str(planted))
+    monkeypatch.chdir(planted.parent)
+
+    monkeypatch.setattr(audio, "get_ffmpeg_exe", lambda: str(bundled))
+    assert audio.resolve_ffmpeg() == str(bundled)
+
+    def missing():
+        raise RuntimeError("no bundled ffmpeg")
+
+    monkeypatch.setattr(audio, "get_ffmpeg_exe", missing)
+    with pytest.raises(FileNotFoundError, match="FFmpeg was not found"):
+        audio.resolve_ffmpeg()
+
+    elsewhere = tmp_path / "tools" / "ffmpeg.exe"
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b"")
+    monkeypatch.setattr(audio.shutil, "which", lambda _name: str(elsewhere))
+    assert audio.resolve_ffmpeg() == str(elsewhere)
+
+
 @pytest.mark.parametrize("platform,expected_flags", [("win32", 0x08000000), ("linux", 0)])
 def test_ffmpeg_launcher_suppresses_windows_console_and_captures_errors(monkeypatch, platform, expected_flags):
     captured = {}

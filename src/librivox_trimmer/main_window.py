@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
         editor = QVBoxLayout()
         editor.setSpacing(16)
         self._track_info = QLabel("Select a chapter to review")
+        self._track_info.setTextFormat(Qt.TextFormat.PlainText)
         self._track_info.setWordWrap(True)
         self._track_info.setMinimumWidth(350)
         editor.addWidget(self._track_info)
@@ -302,6 +303,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(content, 1)
 
         self._status = QLabel("Ready")
+        # Chapter titles come from ID3 tags; never let them render as HTML.
+        self._status.setTextFormat(Qt.TextFormat.PlainText)
         self._status.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
@@ -322,6 +325,15 @@ class MainWindow(QMainWindow):
             )
         if self._settings_error:
             self._status.setText(self._settings_error)
+            QTimer.singleShot(0, self._warn_settings_error)
+
+    def _warn_settings_error(self) -> None:
+        QMessageBox.warning(
+            self,
+            "Preferences not loaded",
+            f"{self._settings_error}\n\nDefault preferences are in use. Saving preferences "
+            "will replace the unreadable file.",
+        )
 
     def _build_project_menu(self) -> None:
         project_menu = self.menuBar().addMenu("&Project")
@@ -542,8 +554,8 @@ class MainWindow(QMainWindow):
 
     def _download_project(self) -> None:
         project_url = self._url_input.text().strip()
-        if not project_url.startswith(("https://", "http://")):
-            QMessageBox.warning(self, "Invalid URL", "Enter a LibriVox project URL.")
+        if not project_url.startswith("https://"):
+            QMessageBox.warning(self, "Invalid URL", "Enter a LibriVox project URL starting with https://.")
             return
 
         project_path = new_project_path_for_url(

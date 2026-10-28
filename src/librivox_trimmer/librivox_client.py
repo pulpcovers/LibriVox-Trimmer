@@ -11,6 +11,11 @@ from librivox_trimmer.progress import DownloadProgress
 USER_AGENT = "LibriVoxAudiobookTrimmer/0.1 (chapter archive downloader)"
 
 
+def _require_https(url: str, what: str) -> None:
+    if urlparse(url).scheme.lower() != "https":
+        raise ValueError(f"The {what} must use https, not an unencrypted connection.")
+
+
 def find_archive_url(page_html: str, page_url: str, quality: str = "best") -> str:
     if quality not in ("best", "smaller"):
         raise ValueError("Unsupported download quality.")
@@ -20,6 +25,8 @@ def find_archive_url(page_html: str, page_url: str, quality: str = "best") -> st
         absolute_url = urljoin(page_url, anchor["href"])
         parsed = urlparse(absolute_url)
         host = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() != "https":
+            continue
         if host != "archive.org" and not host.endswith(".archive.org"):
             continue
         if not parsed.path.lower().endswith(".zip"):
@@ -42,12 +49,14 @@ def download_project_archive(
     progress_callback: Callable[[DownloadProgress], None] | None = None,
     quality: str = "best",
 ) -> Path:
+    _require_https(project_url, "project address")
     response = requests.get(
         project_url,
         headers={"User-Agent": USER_AGENT},
         timeout=(10, 45),
     )
     response.raise_for_status()
+    _require_https(response.url, "project page (it was redirected)")
     archive_url = find_archive_url(response.text, response.url, quality)
     archive_response = requests.get(
         archive_url,
@@ -55,7 +64,12 @@ def download_project_archive(
         stream=True,
         timeout=(10, 60),
     )
-    archive_response.raise_for_status()
+    try:
+        archive_response.raise_for_status()
+        _require_https(archive_response.url, "download (it was redirected)")
+    except Exception:
+        archive_response.close()
+        raise
     content_length = archive_response.headers.get("content-length")
     try:
         total_bytes = int(content_length) if content_length is not None else None
