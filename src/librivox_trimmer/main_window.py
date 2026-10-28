@@ -825,6 +825,14 @@ class MainWindow(QMainWindow):
                     self._waveform_field.setCurrentIndex(index)
         return super().eventFilter(watched, event)
 
+    def _show_waveform_for(self, field: QDoubleSpinBox) -> None:
+        for index, (_label, cut_field, _starts_kept) in enumerate(self._cut_fields):
+            if cut_field is field:
+                self._waveform_field.setCurrentIndex(index)
+
+    def _first_intro_cut_field(self) -> QDoubleSpinBox:
+        return self._notice_start if self._notice_start.value() > 0 else self._keep_start
+
     def _selected_cut_field(self) -> tuple[QDoubleSpinBox, bool]:
         _label, field, starts_kept = self._cut_fields[self._waveform_field.currentIndex()]
         return field, starts_kept
@@ -952,6 +960,7 @@ class MainWindow(QMainWindow):
             self._keep_start.value(),
             self._preview_intro_button,
             "Stop intro preview",
+            waveform_field=self._first_intro_cut_field(),
         )
 
     def _preview_outro_cut(self) -> None:
@@ -964,6 +973,7 @@ class MainWindow(QMainWindow):
             self._ending_resume.value() or duration,
             self._preview_outro_button,
             "Stop outro preview",
+            waveform_field=self._keep_end,
         )
 
     def _preview_chapter_ending(self) -> None:
@@ -989,6 +999,7 @@ class MainWindow(QMainWindow):
             self._preview_ending_button,
             "Stop ending preview",
             following_intervals=following_intervals,
+            waveform_field=self._keep_end,
         )
 
     def _preview_kept_intro(self) -> None:
@@ -1015,6 +1026,7 @@ class MainWindow(QMainWindow):
             self._preview_kept_button,
             "Stop kept-intro preview",
             following_intervals=intervals[1:],
+            waveform_field=self._first_intro_cut_field(),
         )
 
     def _detect_selected(self) -> None:
@@ -1199,6 +1211,7 @@ class MainWindow(QMainWindow):
         button: QPushButton,
         playing_text: str,
         following_intervals: list[tuple[float, float]] | None = None,
+        waveform_field: QDoubleSpinBox | None = None,
     ) -> None:
         path = self._selected_path()
         if path is None:
@@ -1209,6 +1222,8 @@ class MainWindow(QMainWindow):
         if end <= start:
             self._status.setText("That preview interval is empty")
             return
+        if waveform_field is not None:
+            self._show_waveform_for(waveform_field)
         if self._pending_preview is not None:
             self._stop_preview()
         source_url = QUrl.fromLocalFile(str(path.resolve()))

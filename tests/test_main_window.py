@@ -797,6 +797,40 @@ def test_waveform_refuses_cuts_out_of_order(tmp_path, monkeypatch):
     application.processEvents()
 
 
+def test_preview_buttons_switch_waveform_to_first_cut_played(tmp_path, monkeypatch):
+    application, window, _grid = _waveform_window(tmp_path, monkeypatch)
+    window._set_track_controls_enabled(True)
+    started = []
+    monkeypatch.setattr(window, "_start_pending_preview", lambda: started.append(True))
+    monkeypatch.setattr(window._player, "setSource", lambda _source: None)
+
+    def label():
+        return window._waveform_field.currentText()
+
+    window._preview_outro_button.click()
+    assert label() == "End narration at"
+    window._stop_preview()
+
+    window._preview_intro_button.click()
+    assert label() == "Resume audio at"
+    window._stop_preview()
+
+    window._notice_start.setValue(4)
+    window._waveform_field.setCurrentIndex(3)
+    window._preview_kept_button.click()
+    assert label() == "Remove intro notice from"
+    window._waveform_field.setCurrentIndex(3)
+    window._preview_kept_button.click()
+    assert window._pending_preview is None
+    assert label() == "Retain book ending from"
+
+    window._preview_ending_button.click()
+    assert label() == "End narration at"
+    window._stop_preview()
+    window.close()
+    application.processEvents()
+
+
 def test_focusing_a_time_field_selects_it_for_the_waveform(tmp_path, monkeypatch):
     application, window, _grid = _waveform_window(tmp_path, monkeypatch)
     window.show()
