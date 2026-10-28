@@ -8,6 +8,7 @@ from librivox_trimmer.audio import (
     extract_analysis_slice,
     pause_after_heading,
     reader_credit_pause,
+    refine_announcement_outro_cut,
     refine_cut_into_pause,
     refine_intro_resume_start,
     refine_outro_boundary_with_silence,
@@ -243,7 +244,9 @@ def _transcribe_outro(
     return outro_words, retries, remaining
 
 
-def _confirm_reader_credit(track_path, detection, intro_words, duration, model, safety_gap, report):
+def _confirm_reader_credit(
+    track_path, detection, intro_words, duration, model, safety_gap, report, *, chapter_title="",
+):
     intro = detection.intro
     if intro is None or intro.reader_credit_start_seconds is None:
         return detection
@@ -264,7 +267,9 @@ def _confirm_reader_credit(track_path, detection, intro_words, duration, model, 
         [word for word in intro_words if word.end <= notice_end]
         + [word for word in focused_words if word.end > notice_end]
     )
-    candidate = detect_intro_boundary(candidate_words, safety_gap_seconds=safety_gap)
+    candidate = detect_intro_boundary(
+        candidate_words, safety_gap_seconds=safety_gap, chapter_title=chapter_title,
+    )
     if (
         candidate is not None
         and candidate.reader_credit_start_seconds is not None
@@ -285,6 +290,22 @@ def _confirm_reader_credit(track_path, detection, intro_words, duration, model, 
             and credit_end <= first_pause[0] + 0.15
             and first_pause[0] <= pause <= first_pause[1]
         ):
+            confirmed = True
+        elif pause is not None and pause >= credit_end and cue_end is not None and not (
+            first_pause is not None and first_pause[0] < credit_end - 0.15
+        ):
+            # Readers often pause 0.5-0.75 s after the credit; accept that only where the transcript's
+            # confirmed credit end lines up with it and no longer pause falls inside the credit.
+            short_pause = reader_credit_pause(track_path, cue_end, crop_end, 0.5, credit_end - 0.1)
+            confirmed = (
+                short_pause is not None
+                and credit_end <= short_pause[0] + 0.15
+                and short_pause[0] <= credit_end + 0.75
+                and short_pause[0] <= pause <= short_pause[1]
+            )
+        else:
+            confirmed = False
+        if confirmed:
             return replace(detection, intro=replace(
                 intro, notice_end_seconds=credit_end, keep_time_seconds=pause,
                 reader_credit_end_seconds=credit_end,
@@ -347,9 +368,14 @@ def _refine_outro(track_path, detection, duration):
     if outro is None:
         return detection
     resume = outro.resume_after_outro_seconds
-    refined_time = refine_outro_boundary_with_silence(track_path, outro.keep_time_seconds)
-    if refined_time > outro.keep_time_seconds and (resume is None or refined_time < resume):
-        outro = replace(outro, keep_time_seconds=refined_time)
+    if outro.announcement_outro:
+        refined_time = refine_announcement_outro_cut(track_path, outro.keep_time_seconds)
+        if refined_time is not None and (resume is None or refined_time < resume):
+            outro = replace(outro, keep_time_seconds=refined_time)
+    else:
+        refined_time = refine_outro_boundary_with_silence(track_path, outro.keep_time_seconds)
+        if refined_time > outro.keep_time_seconds and (resume is None or refined_time < resume):
+            outro = replace(outro, keep_time_seconds=refined_time)
     if resume is not None and outro.retained_ending_match_end_seconds is not None:
         refined_resume = refine_cut_into_pause(track_path, resume, outro.retained_ending_match_end_seconds)
         if outro.keep_time_seconds < refined_resume < duration:
@@ -422,7 +448,7 @@ def analyze_track_boundaries(
     )
     detection = _confirm_reader_credit(
         track_path, detection, intro_words, duration, model,
-        settings.intro_safety_gap_seconds, report,
+        settings.intro_safety_gap_seconds, report, chapter_title=title,
     )
     detection = _refine_intro(
         track_path, detection, intro_words, settings.intro_safety_gap_seconds, report, title,

@@ -61,6 +61,8 @@ class BoundarySuggestion:
     reader_credit_end_seconds: float | None = None
     notice_only_end_seconds: float | None = None
     reader_credit_prefix_end_seconds: float | None = None
+    # The outro was found by matching the chapter's opening announcement, so its first heard word may be late.
+    announcement_outro: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,6 +207,14 @@ def detect_intro_boundary(
     )
     matched_text = "; ".join(match.text for match in cluster)
     notice_end = max(match.end for match in cluster)
+    # A doubled "LibriVox" can make the best match stop before the spoken "org".
+    following_token = next((word for word in _tokenize(words) if word.start >= notice_end - 0.05), None)
+    if (
+        following_token is not None
+        and following_token.text == "org"
+        and following_token.start - notice_end <= 0.5
+    ):
+        notice_end = following_token.end
     notice_only_end = notice_end
     retained_credit_start = None
     reader_credit_start = None
@@ -355,6 +365,24 @@ def detect_outro_boundary(
     )
 
 
+def _announcement_parts(text):
+    identities = {}
+    content = []
+    index = 0
+    while index < len(text):
+        token = text[index]
+        if token in {"part", "chapter", "section"} and index + 1 < len(text):
+            value = _number_value(text[index + 1])
+            if value is not None:
+                identities[token] = value
+                index += 2
+                continue
+        if token not in {"of", "the", "by", "a", "an"}:
+            content.append(token)
+        index += 1
+    return identities, content
+
+
 def remove_duplicate_first_announcement(
     words: Sequence[TimedWord], intro: BoundarySuggestion, *, retain_book_information: bool = True,
 ) -> BoundarySuggestion:
@@ -367,26 +395,16 @@ def remove_duplicate_first_announcement(
         if word.end > intro.keep_time_seconds
         and word.start < intro.keep_time_seconds + 20
     ]
-
-    def announcement_parts(text):
-        identities = {}
-        content = []
-        index = 0
-        while index < len(text):
-            token = text[index]
-            if token in {"part", "chapter", "section"} and index + 1 < len(text):
-                value = _number_value(text[index + 1])
-                if value is not None:
-                    identities[token] = value
-                    index += 2
-                    continue
-            if token not in {"of", "the", "by", "a", "an"}:
-                content.append(token)
-            index += 1
-        return identities, content
+    announcement_parts = _announcement_parts
 
     earlier_ids, earlier_content = announcement_parts(before)
     later_ids, later_content = announcement_parts(after)
+    repeated_announcement = bool(
+        earlier_ids
+        and all(later_ids.get(key) == value for key, value in earlier_ids.items())
+        and len(earlier_content) >= 2
+        and all(any(fuzz.ratio(token, other) >= 85 for other in later_content) for token in earlier_content)
+    )
     if not retain_book_information:
         chapter_id = earlier_ids.get("chapter", earlier_ids.get("section"))
         later_id = later_ids.get("chapter", later_ids.get("section"))
@@ -409,7 +427,7 @@ def remove_duplicate_first_announcement(
             for start in range(max(0, len(title_content) - 1))
             for later in range(min(10, max(0, len(later_content) - 1)))
         )
-        if repeated_number or repeated_title:
+        if repeated_number or repeated_title or repeated_announcement:
             return replace(intro, removal_start_seconds=0.0)
         before_words = [word for word in tokens if word.end <= intro.removal_start_seconds]
         declarations = [
@@ -424,12 +442,7 @@ def remove_duplicate_first_announcement(
             chapter_end = before_words[end_index].end
             return replace(intro, heading_cut_seconds=chapter_end)
         return intro
-    if (
-        earlier_ids
-        and all(later_ids.get(key) == value for key, value in earlier_ids.items())
-        and len(earlier_content) >= 2
-        and all(any(fuzz.ratio(token, other) >= 85 for other in later_content) for token in earlier_content)
-    ):
+    if repeated_announcement:
         return replace(intro, removal_start_seconds=0.0)
     return intro
 
@@ -555,6 +568,116 @@ def detect_final_chapter_outro(
     )
 
 
+_LEAD_IN_WORDS = {"end", "and", "of"}
+
+
+def _content_span_end(tokens: Sequence[TimedWord], first: int, content: Sequence[str]) -> TimedWord | None:
+    """Last token of the span after `first` that contains every wanted word, or None."""
+    span = tokens[first:first + len(content) + 6]
+    used: set[int] = set()
+    last = -1
+    for wanted in content:
+        for position, token in enumerate(span):
+            if position not in used and fuzz.ratio(wanted, token.text) >= 85:
+                used.add(position)
+                last = max(last, position)
+                break
+        else:
+            return None
+    if span[last].end - span[0].start > 14:
+        return None
+    return span[last]
+
+
+def _extend_over_lead_in(tokens: Sequence[TimedWord], index: int) -> int:
+    # Whisper often hears "End of" as "And of" or drops it, so include what is left of it.
+    while (
+        index > 0 and tokens[index - 1].text in _LEAD_IN_WORDS
+        and tokens[index].start - tokens[index - 1].end <= 1.5
+    ):
+        index -= 1
+    return index
+
+
+def detect_repeated_announcement_outro(
+    intro_words: Sequence[TimedWord],
+    transcripts: Sequence[Sequence[TimedWord]],
+    duration_seconds: float | None,
+    *, with_book_ending: bool = False,
+) -> BoundarySuggestion | None:
+    """Find a closing announcement ("End of Part 3 of Red Nails by ...") by matching the opening one."""
+    if duration_seconds is None:
+        return None
+    notice = _find_phrase_matches(intro_words, INTRO_PHRASES)
+    limit = min((match.start for match in notice), default=10.0)
+    identities, content = _announcement_parts(
+        [word.text for word in _tokenize(intro_words) if word.end <= limit]
+    )
+    if not identities or len(content) < 2:
+        return None
+    wanted_numbers = set(identities.values())
+    prepared = [
+        [token for token in _tokenize(_merge_digit_groups(transcript))
+         if token.start >= duration_seconds - 30.0]
+        for transcript in transcripts
+    ]
+
+    markers: list[PhraseMatch] = []
+    for tokens in prepared:
+        for index, token in enumerate(tokens):
+            labelled = (
+                token.text in identities and index + 1 < len(tokens)
+                and _number_value(tokens[index + 1].text) == identities[token.text]
+            )
+            bare = _number_value(token.text) in wanted_numbers and (
+                index == 0 or tokens[index - 1].text not in identities
+            )
+            if not (labelled or bare):
+                continue
+            last = _content_span_end(tokens, index + (2 if labelled else 1), content)
+            if last is None:
+                continue
+            begin = _extend_over_lead_in(tokens, index)
+            markers.append(PhraseMatch(
+                "repeated announcement",
+                " ".join(item.text for item in tokens if tokens[begin].start <= item.start <= last.start),
+                tokens[begin].start, last.end, 92.0,
+            ))
+            break
+    if not markers:
+        return None
+    marker = min(markers, key=lambda match: match.start)
+
+    resume = retained_end = None
+    if with_book_ending:
+        endings: list[PhraseMatch] = []
+        for tokens in prepared:
+            for index, token in enumerate(tokens):
+                if token.start < marker.end - 0.2:
+                    continue
+                if token.text not in _LEAD_IN_WORDS and not any(fuzz.ratio(word, token.text) >= 85 for word in content):
+                    continue
+                last = _content_span_end(tokens, index, content)
+                if last is None:
+                    continue
+                begin = _extend_over_lead_in(tokens, index)
+                endings.append(PhraseMatch(
+                    "end of book", "", max(marker.end, tokens[begin].start), last.end, 90.0,
+                ))
+                break
+        if endings:
+            ending = min(endings, key=lambda match: match.start)
+            resume, retained_end = ending.start, ending.end
+    return BoundarySuggestion(
+        keep_time_seconds=marker.start,
+        confidence=marker.score,
+        matched_text=marker.text,
+        resume_after_outro_seconds=resume,
+        retained_ending_match_end_seconds=retained_end,
+        announcement_outro=True,
+    )
+
+
 def detect_boundaries(
     intro_words: Sequence[TimedWord],
     outro_words: Sequence[TimedWord],
@@ -587,5 +710,10 @@ def detect_boundaries(
         outro = detect_outro_boundary(
             outro_words, safety_gap_seconds=outro_safety_gap_seconds,
             duration_seconds=duration_seconds,
+        )
+    if outro is None:
+        outro = detect_repeated_announcement_outro(
+            intro_words, [outro_words, *outro_transcripts], duration_seconds,
+            with_book_ending=is_last_chapter,
         )
     return BoundaryDetection(intro=intro, outro=outro)

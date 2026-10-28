@@ -928,6 +928,19 @@ def test_unreadable_preferences_warn_the_user_and_fall_back_to_defaults(qapp, tm
     qapp.processEvents()
 
 
+def test_preview_running_to_the_end_of_the_file_finishes_when_the_media_ends(window):
+    window._active_preview_button = window._preview_ending_button
+    window._active_preview_original_text = "Preview chapter ending"
+    window._pending_preview = (1_000_000, 1_445_900)
+    window._preview_started = True
+
+    window._on_media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
+
+    assert window._pending_preview is None
+    assert window._preview_ending_button.text() == "Preview chapter ending"
+    assert window._status.text() == "Preview finished"
+
+
 def test_focusing_a_time_field_selects_it_for_the_waveform(window, frame_grid, qapp):
     window.show()
     qapp.processEvents()

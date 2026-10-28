@@ -188,6 +188,126 @@ def test_later_track_removes_credit_before_notice():
     assert result.intro.keep_time_seconds > notice[-1].end
 
 
+def _timeline(spoken, duration):
+    """Build words from 'text start end' items; negative times count back from the end of the track."""
+    words = []
+    for item in spoken.split("|"):
+        text, start, end = item.rsplit(" ", 2)
+        start, end = float(start), float(end)
+        words.append(TimedWord(
+            text, start + duration if start < 0 else start, end + duration if end <= 0 else end, 0.95,
+        ))
+    return words
+
+
+_RED_NAILS_OPENING = (
+    "Part 0.0 0.3|{n} 0.3 0.9|of 0.9 1.5|Red 1.5 2.0|Nails 2.0 2.6|by 2.6 3.3|Robert 3.3 3.7|"
+    "E. 3.7 4.0|Howard 4.6 4.6|This 4.6 5.6|LibraVox 5.6 6.7|recording 6.7 7.0|is 7.0 7.5|"
+    "in 7.5 7.8|the 7.8 8.0|public 8.0 8.4|domain. 8.4 8.9"
+)
+
+
+@pytest.mark.parametrize("closing", [
+    "And -16.4 -16.2|of -16.1 -15.9|Part -15.0 -14.8|3 -14.8 -14.5|of -14.5 -14.3|Red -13.5 -13.1|"
+    "Nails -13.1 -12.7|by -12.5 -12.3|Robert -11.8 -11.5|E. -11.3 -11.1|Howard -10.4 -10.2",
+    "And -16.4 -16.2|of -16.1 -15.9|3 -15.0 -14.5|of -14.5 -14.3|Red -13.7 -13.2|"
+    "Nails -13.2 -12.8|by -12.6 -12.3|Robert -11.9 -11.5|E. -11.3 -11.1|Howard -10.4 -10.2",
+])
+def test_closing_announcement_repeating_the_opening_is_an_outro_even_when_end_of_is_misheard(closing):
+    duration = 2671.0
+    intro = _timeline(_RED_NAILS_OPENING.format(n=3), duration)
+    narration = _timeline("hall. -24.0 -23.0", duration)
+    outro = narration + _timeline(closing, duration)
+
+    result = detect_boundaries(intro, outro, duration_seconds=duration)
+
+    assert result.outro is not None
+    assert result.outro.announcement_outro
+    assert result.outro.keep_time_seconds == pytest.approx(duration - 16.4)
+    assert result.outro.resume_after_outro_seconds is None
+
+
+def test_narration_that_does_not_repeat_the_opening_announcement_has_no_such_outro():
+    duration = 2671.0
+    intro = _timeline(_RED_NAILS_OPENING.format(n=3), duration)
+    outro = _timeline("The -24.0 -23.5|door -23.5 -23.0|Part -15.0 -14.8|3 -14.8 -14.5|was -14.0 -13.5", duration)
+
+    assert detect_boundaries(intro, outro, duration_seconds=duration).outro is None
+
+
+def test_last_chapter_keeps_the_book_ending_that_follows_a_repeated_part_announcement():
+    duration = 1445.9
+    intro = _timeline(_RED_NAILS_OPENING.format(n=5), duration)
+    main = _timeline("means. -23.5 -22.6", duration)
+    marker = _timeline(
+        "Part -15.0 -14.8|5 -14.8 -14.5|of -14.5 -14.3|Red -13.5 -13.1|Nails -13.1 -12.7|by -12.5 -12.3|"
+        "Robert -11.8 -11.5|E. -11.3 -11.1|Howard -10.4 -10.2", duration,
+    )
+    ending = _timeline(
+        "End -10.0 -9.8|of -9.8 -9.4|Red -9.2 -8.8|Nails -8.8 -8.0|by -7.6 -7.2|Robert -7.2 -6.6|"
+        "E. -6.4 -6.1|Howard -5.8 -5.2", duration,
+    )
+
+    result = detect_boundaries(
+        intro, main, is_last_chapter=True, book_title="Red Nails",
+        outro_transcripts=[ending, marker], duration_seconds=duration,
+    )
+
+    assert result.outro is not None and result.outro.announcement_outro
+    assert result.outro.keep_time_seconds == pytest.approx(duration - 15.0)
+    assert result.outro.resume_after_outro_seconds == pytest.approx(duration - 10.0)
+    assert result.outro.retained_ending_match_end_seconds == pytest.approx(duration - 5.2)
+
+
+def test_later_chapter_drops_a_part_announcement_that_is_repeated_after_the_credit():
+    before = make_words("Part 3 of Red Nails by Robert E Howard")
+    notice = make_words("This is a LibriVox recording", start=6)
+    credit = make_words("Reading by Greg Margarit.", start=8.4)
+    after = make_words("Part 3 of Red Nails by Robert E Howard Chapter 3 The People of the Feud", start=12)
+
+    result = detect_boundaries(before + notice + credit + after, [])
+
+    assert result.intro is not None
+    assert result.intro.removal_start_seconds == 0
+    assert credit[-1].end <= result.intro.keep_time_seconds < after[0].start
+
+
+def test_later_chapter_keeps_a_part_announcement_that_is_not_repeated():
+    before = make_words("Part 3 of Red Nails by Robert E Howard")
+    notice = make_words("This is a LibriVox recording", start=6)
+    after = make_words("Chapter 3 The People of the Feud", start=12)
+
+    result = detect_boundaries(before + notice + after, [])
+
+    assert result.intro is not None
+    assert result.intro.removal_start_seconds > 0
+
+
+def test_first_chapter_cut_covers_a_spoken_org_that_the_notice_match_missed():
+    spoken = (
+        "Part 0.0 0.3|1 0.3 0.8|of 0.8 1.4|Red 1.4 1.9|Nails 1.9 2.6|by 2.6 3.2|Robert 3.2 3.6|"
+        "E. 3.6 4.0|Howard. 4.6 4.6|This 5.0 5.8|is 5.8 6.3|a 6.3 6.5|LibraVox 6.5 7.1|"
+        "recording. 7.1 7.4|All 8.5 8.7|LibraVox 8.7 9.4|recordings 9.4 9.7|are 9.7 10.2|"
+        "in 10.2 10.6|the 10.6 10.8|public 10.8 11.2|domain. 11.2 11.5|For 12.7 12.8|"
+        "more 12.8 13.2|information 13.2 13.8|or 13.8 14.6|to 14.6 14.8|volunteer, 14.8 15.4|"
+        "please 16.1 16.4|visit 16.4 16.8|LibraVox. 16.8 17.9|LibraVox 16.9 17.9|.org. 17.9 18.9|"
+        "Reading 20.1 20.4|by 20.4 21.2|Greg 21.2 21.8|Margarit. 21.8 22.9|Part 24.3 24.3|"
+        "1 24.3 24.9|of 24.9 25.5|Red 25.5 26.0|Nails 26.0 26.7|by 26.7 27.3|Robert 27.3 27.8|"
+        "E. 27.8 28.1|Howard. 28.4 28.7|CHAPTER 34.4 34.9|I 34.9 35.3|THE 35.3 36.3"
+    )
+    words = [
+        TimedWord(text, float(start), float(end), 0.95)
+        for text, start, end in (item.rsplit(" ", 2) for item in spoken.split("|"))
+    ]
+
+    result = detect_boundaries(words, [], is_first_chapter=True)
+
+    assert result.intro is not None
+    assert result.intro.notice_end_seconds == pytest.approx(18.9)
+    assert 18.9 < result.intro.keep_time_seconds < 20.1
+    assert result.intro.removal_start_seconds == 0
+
+
 def test_later_track_removes_attached_reader_credit():
     notice = make_words("This is a LibriVox recording.")
     credit = make_words("Reading by Mark Nelson.", start=2.7)

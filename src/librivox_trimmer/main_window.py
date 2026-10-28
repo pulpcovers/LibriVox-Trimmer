@@ -1440,6 +1440,9 @@ class MainWindow(QMainWindow):
     def _on_media_status_changed(self, status) -> None:
         if status == QMediaPlayer.MediaStatus.LoadedMedia:
             self._start_pending_preview()
+        elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._pending_preview is not None:
+            # A preview that runs to the end of the file never reports reaching its exact end time.
+            self._stop_preview("Preview finished")
 
     def _start_pending_preview(self) -> None:
         if self._pending_preview is None or self._preview_started:

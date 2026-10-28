@@ -18,6 +18,9 @@ def window(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(main_window, "load_settings", lambda: AppSettings())
     main = MainWindow()
     yield main
+    # Waveform loads run in the thread pool; let them finish before Qt objects are torn down.
+    main._thread_pool.waitForDone(10000)
+    qapp.processEvents()
     main.close()
     qapp.processEvents()
 

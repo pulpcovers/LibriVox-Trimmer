@@ -51,6 +51,64 @@ def test_credit_retry_protects_narration_without_chapter_metadata(tmp_path, monk
         assert "protect narration" in result.intro_review_reason
 
 
+def _credit_case(monkeypatch, credit_words, tail_words, pauses, resume, chapter_title=""):
+    notice = _timed("This LibriVox recording is in the public domain", 5, 0.4)
+    words = notice + credit_words + tail_words
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", lambda *_args, **_kwargs: credit_words + tail_words)
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: resume)
+    monkeypatch.setattr(
+        detection, "reader_credit_pause",
+        lambda _path, _cue, _end, minimum=0.75, not_before=None: pauses.get(minimum),
+    )
+    original = detection.detect_boundaries(words, [], chapter_title=chapter_title)
+    return detection._confirm_reader_credit(
+        Path("chapter.mp3"), original, words, 100, object(), 0.6, lambda _message: None,
+        chapter_title=chapter_title,
+    )
+
+
+_FISHER = [
+    TimedWord("Recording", 8.7, 9.3), TimedWord("by", 9.3, 9.6),
+    TimedWord("Nigel", 9.6, 10.0), TimedWord("Fisher.", 10.0, 10.4),
+]
+
+
+def test_credit_followed_by_a_short_aligned_pause_is_confirmed(monkeypatch):
+    result = _credit_case(
+        monkeypatch, _FISHER, _timed("Our reception in Kalnagar", 12.0, 0.4),
+        pauses={0.5: (10.6, 11.3)}, resume=10.95,
+    )
+
+    assert result.intro.keep_time_seconds == 10.95
+    assert result.intro.reader_credit_end_seconds == pytest.approx(10.4)
+    assert result.intro_review_reason is None
+
+
+def test_short_pause_is_not_enough_when_a_longer_pause_falls_inside_the_credit(monkeypatch):
+    result = _credit_case(
+        monkeypatch, _FISHER, _timed("Our reception in Kalnagar", 12.0, 0.4),
+        pauses={0.75: (9.4, 10.2), 0.5: (10.6, 11.3)}, resume=10.95,
+    )
+
+    assert result.intro.reader_credit_end_seconds is None
+    assert "protect narration" in result.intro_review_reason
+
+
+@pytest.mark.parametrize("known_title", [True, False])
+def test_credit_ending_in_a_comma_is_confirmed_only_when_the_chapter_title_marks_its_end(monkeypatch, known_title):
+    credit = _FISHER[:3] + [TimedWord("Fisher,", 10.0, 10.4)]
+    title = [TimedWord("Beginning", 11.0, 11.4), TimedWord("the", 11.4, 11.6), TimedWord("voyage.", 11.6, 12.1)]
+    result = _credit_case(
+        monkeypatch, credit, title + _timed("I determined to build", 13.5, 0.4),
+        pauses={0.75: (10.6, 11.0)}, resume=10.8,
+        chapter_title="03 - Beginning the Voyage" if known_title else "",
+    )
+
+    assert (result.intro.reader_credit_end_seconds is not None) == known_title
+    assert (result.intro_review_reason is None) == known_title
+
+
 def test_credit_retry_without_supported_ending_keeps_credit_and_flags_review(tmp_path, monkeypatch):
     words = _timed("This is a LibriVox recording.", 0, 0.3)
     words += _timed("Recording by A Reader the story begins without a pause", 2.7, 0.3)

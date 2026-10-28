@@ -110,11 +110,15 @@ def _detect_silences(
     return silences
 
 
-def reader_credit_pause(source_path: Path, cue_end: float, window_end: float) -> tuple[float, float] | None:
-    pauses = _detect_silences(source_path, max(0.0, cue_end - 0.5), window_end, 0.75)
+def reader_credit_pause(
+    source_path: Path, cue_end: float, window_end: float,
+    minimum_seconds: float = 0.75, not_before: float | None = None,
+) -> tuple[float, float] | None:
+    pauses = _detect_silences(source_path, max(0.0, cue_end - 0.5), window_end, minimum_seconds)
     return next((
         (start, end) for start, end in pauses or []
-        if start >= cue_end and end < window_end - 0.05 and end - start >= 0.75
+        if start >= cue_end and (not_before is None or start >= not_before)
+        and end < window_end - 0.05 and end - start >= minimum_seconds
     ), None)
 
 
@@ -144,6 +148,21 @@ def refine_outro_boundary_with_silence(
         ):
             return silence_end
     return candidate_time
+
+
+def refine_announcement_outro_cut(
+    source_path: Path, marker_start: float, *, tail_seconds: float = 1.0,
+) -> float | None:
+    """Cut inside the long pause before a closing announcement, keeping a short natural tail.
+
+    Whisper often drops the opening "End of", so the first heard word can sit well inside the
+    announcement; the speech onset after the pause is the reliable boundary.
+    """
+    silences = _detect_silences(source_path, max(0.0, marker_start - 12.0), marker_start + 1.0, 1.0) or []
+    for start, end in silences:
+        if marker_start - 4.0 <= end <= marker_start + 2.5:
+            return max(start, min(end - 0.15, start + tail_seconds))
+    return None
 
 
 def refine_cut_into_pause(

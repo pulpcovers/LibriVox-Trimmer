@@ -145,6 +145,18 @@ def test_notice_cut_uses_complete_pause_without_clipping_announcement(tmp_path, 
 
 
 @pytest.mark.parametrize("pauses,expected", [
+    ([(100.0, 106.0)], 101.0),
+    ([(105.0, 105.9)], pytest.approx(105.75)),
+    ([(90.0, 95.0)], None),
+    ([], None),
+])
+def test_announcement_outro_cuts_inside_the_pause_before_the_announcement(tmp_path, monkeypatch, pauses, expected):
+    monkeypatch.setattr(audio, "_detect_silences", lambda *_args: pauses)
+
+    assert audio.refine_announcement_outro_cut(tmp_path / "chapter.mp3", 107.0) == expected
+
+
+@pytest.mark.parametrize("pauses,expected", [
     ([(9.0, 9.85), (11.25, 12.26), (14.02, 15.08)], (11.25, 12.26)),
     ([(11.1, 11.6)], None),
     ([(11.25, 16.0)], None),
