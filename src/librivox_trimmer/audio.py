@@ -12,10 +12,12 @@ from imageio_ffmpeg import get_ffmpeg_exe
 from librivox_trimmer.metadata import read_track, restore_id3_tags
 
 
-def _run_ffmpeg(command: list[str], *, check: bool = False) -> subprocess.CompletedProcess[str]:
+def _run_ffmpeg(
+    command: list[str], *, check: bool = False, binary: bool = False,
+) -> subprocess.CompletedProcess:
     creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     return subprocess.run(
-        command, check=check, capture_output=True, text=True,
+        command, check=check, capture_output=True, text=not binary,
         stdin=subprocess.DEVNULL, creationflags=creation_flags,
     )
 

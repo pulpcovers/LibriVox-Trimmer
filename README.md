@@ -139,6 +139,13 @@ Use the Intro and Outro time fields to adjust suggestions. **Remove intro notice
 from** and **Resume audio at** control the opening cut. **End narration at** and
 **Retain book ending from** control the outro. A retained book ending is optional.
 
+Below the time fields, **Fine-tune** shows a five-second waveform around the
+selected cut. Choose the cut in the drop-down, or click into its time field, then
+click or drag on the waveform to place it. The removed side is shaded red. Cuts
+snap to MP3 frame boundaries (about 26 ms for LibriVox 64 kbps files), so the
+line shows exactly where the exported file will cut. With the waveform focused,
+the arrow keys move the cut one frame; hold Shift to move ten frames.
+
 Exports use MP3 stream copy and restore ID3 tags. MP3 frame boundaries limit cut
 precision, so listen to uncertain transitions. Outro markers include explicit
 chapter, section, introduction, and prologue endings. Numbered endings such as

@@ -2,8 +2,9 @@ from pathlib import Path
 import shutil
 from dataclasses import replace
 
-from PySide6.QtCore import QThreadPool, QTimer, Qt, QUrl, Slot
+from PySide6.QtCore import QEvent, QThreadPool, QTimer, Qt, QUrl, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -50,6 +51,8 @@ from librivox_trimmer.project import (
     save_project as write_project,
 )
 from librivox_trimmer.progress import DownloadProgress
+from librivox_trimmer.waveform import FrameGrid, read_frame_grid, read_waveform
+from librivox_trimmer.waveform_view import WaveformView
 from librivox_trimmer.workers import Worker
 from librivox_trimmer.settings import AppSettings, load_settings, save_settings
 from librivox_trimmer.settings_dialog import SettingsDialog
@@ -76,6 +79,9 @@ class MainWindow(QMainWindow):
         self._active_preview_original_text = ""
         self._bulk_results: dict[Path, TrackBoundaryResult] = {}
         self._bulk_errors: dict[Path, str] = {}
+        self._frame_grids: dict[Path, FrameGrid | None] = {}
+        self._waveform_request = 0
+        self._waveform_workers: set[Worker] = set()
         self._settings_error = ""
         try:
             self._settings = load_settings()
@@ -244,6 +250,30 @@ class MainWindow(QMainWindow):
         cut_sections.addWidget(self._outro_panel, 1)
         editor.addLayout(cut_sections)
 
+        waveform_row = QHBoxLayout()
+        waveform_row.addWidget(QLabel("Fine-tune"))
+        self._waveform_field = QComboBox()
+        self._cut_fields = (
+            ("Remove intro notice from", self._notice_start, False),
+            ("Resume audio at", self._keep_start, True),
+            ("End narration at", self._keep_end, False),
+            ("Retain book ending from", self._ending_resume, True),
+        )
+        for label, _field, _starts_kept in self._cut_fields:
+            self._waveform_field.addItem(label)
+        self._waveform_field.currentIndexChanged.connect(self._refresh_waveform)
+        waveform_row.addWidget(self._waveform_field, 1)
+        self._waveform_hint = QLabel("Click or drag to place the cut; arrow keys move one MP3 frame.")
+        self._waveform_hint.setStyleSheet("color: #5d6670;")
+        editor.addLayout(waveform_row)
+        self._waveform = WaveformView()
+        self._waveform.cut_changed.connect(self._apply_waveform_cut)
+        editor.addWidget(self._waveform)
+        editor.addWidget(self._waveform_hint)
+        for _label, field, _starts_kept in self._cut_fields:
+            field.installEventFilter(self)
+            field.valueChanged.connect(self._sync_waveform_cut)
+
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
         divider.setFrameShadow(QFrame.Shadow.Sunken)
@@ -345,6 +375,10 @@ class MainWindow(QMainWindow):
               <li>Use the preview buttons to listen to the removed intro/outro, the
                   preserved opening through the kept narration and book ending. Adjust the time fields
                   if needed.</li>
+              <li>To fine-tune a cut, pick its field under <b>Fine-tune</b> (or click
+                  into the field) and click or drag on the waveform. The red area is
+                  removed. Cuts snap to MP3 frames, so the line shows exactly where
+                  the export will cut; arrow keys move one frame, Shift+arrow ten.</li>
               <li>Choose <b>Export trimmed chapter</b> for the selected chapter, or
                   <b>Export all chapters...</b> to batch-export the loaded list. Batch
                   export asks you to confirm that you have validated every cut point.
@@ -384,8 +418,13 @@ class MainWindow(QMainWindow):
             self._preview_ending_button,
             self._preview_kept_button,
             self._trim_button,
+            self._waveform_field,
+            self._waveform,
         ):
             widget.setEnabled(enabled)
+        if not enabled:
+            self._waveform_request += 1
+            self._waveform.set_message("Select a chapter to see its waveform")
 
     def _set_busy(self, busy: bool) -> None:
         self._settings_action.setEnabled(not busy)
@@ -777,6 +816,117 @@ class MainWindow(QMainWindow):
         )
         self._show_review(path, duration)
         self._set_track_controls_enabled(True)
+        self._refresh_waveform()
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.FocusIn:
+            for index, (_label, field, _starts_kept) in enumerate(self._cut_fields):
+                if watched is field and self._waveform_field.currentIndex() != index:
+                    self._waveform_field.setCurrentIndex(index)
+        return super().eventFilter(watched, event)
+
+    def _selected_cut_field(self) -> tuple[QDoubleSpinBox, bool]:
+        _label, field, starts_kept = self._cut_fields[self._waveform_field.currentIndex()]
+        return field, starts_kept
+
+    def _cut_marker(self, path: Path) -> tuple[float | None, bool]:
+        field, starts_kept = self._selected_cut_field()
+        value = field.value()
+        if value <= 0 and field in (self._notice_start, self._ending_resume):
+            return None, starts_kept
+        grid = self._frame_grids.get(path.resolve())
+        if grid is None:
+            return value, starts_kept
+        return grid.exported_cut(value, starts_kept_audio=starts_kept), starts_kept
+
+    def _refresh_waveform(self, *_args) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        field, _starts_kept = self._selected_cut_field()
+        duration = self._keep_end.maximum()
+        center = field.value()
+        if center <= 0 and field in (self._notice_start, self._ending_resume):
+            center = self._keep_start.value() if field is self._notice_start else self._keep_end.value()
+        start = max(0.0, min(center - 2.5, duration - 5.0))
+        end = min(duration, start + 5.0)
+        if end <= start:
+            return
+        self._waveform_request += 1
+        if not path.is_file():
+            self._waveform.set_message("Audio file not found")
+            return
+        request = self._waveform_request
+        key = path.resolve()
+        known_grid = key in self._frame_grids
+        self._waveform.set_message("Loading waveform...")
+
+        def load():
+            grid = self._frame_grids.get(key) if known_grid else read_frame_grid(path)
+            return request, key, grid, read_waveform(path, start, end)
+
+        worker = Worker(load)
+        self._waveform_workers.add(worker)
+        worker.signals.finished.connect(lambda result, worker=worker: self._waveform_loaded(worker, result))
+        worker.signals.failed.connect(lambda message, worker=worker: self._waveform_failed(worker, request, message))
+        self._thread_pool.start(worker)
+
+    def _waveform_loaded(self, worker: Worker, result) -> None:
+        self._waveform_workers.discard(worker)
+        request, key, grid, window = result
+        self._frame_grids[key] = grid
+        path = self._selected_path()
+        if request != self._waveform_request or path is None or path.resolve() != key:
+            return
+        self._waveform.set_waveform(window, grid)
+        self._sync_waveform_cut()
+
+    def _waveform_failed(self, worker: Worker, request: int, message: str) -> None:
+        self._waveform_workers.discard(worker)
+        if request == self._waveform_request:
+            self._waveform.set_message(f"Could not load waveform: {message}")
+
+    def _sync_waveform_cut(self, *_args) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        marker, starts_kept = self._cut_marker(path)
+        window = self._waveform.window_range
+        if marker is not None and window is not None and not window[0] <= marker <= window[1]:
+            self._refresh_waveform()
+            return
+        self._waveform.set_cut(marker, starts_kept_audio=starts_kept)
+
+    def _apply_waveform_cut(self, boundary: float) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        field, starts_kept = self._selected_cut_field()
+        grid = self._frame_grids.get(path.resolve())
+        value = grid.value_for_cut(boundary, starts_kept_audio=starts_kept) if grid else boundary
+        value = round(min(field.maximum(), max(0.0, value)), field.decimals())
+        problem = self._cut_order_problem(field, value)
+        if problem:
+            self._status.setText(problem)
+            self._sync_waveform_cut()
+            return
+        field.setValue(value)
+        self._status.setText(f"Cut placed on the MP3 frame boundary at {boundary:.3f}s")
+
+    def _cut_order_problem(self, field: QDoubleSpinBox, value: float) -> str | None:
+        notice = self._notice_start.value()
+        start = self._keep_start.value()
+        end = self._keep_end.value()
+        ending = self._ending_resume.value()
+        if field is self._notice_start and value >= start:
+            return "The notice cut must stay before Resume audio at."
+        if field is self._keep_start and (value >= end or (notice > 0 and value <= notice)):
+            return "Resume audio at must stay between the notice cut and End narration at."
+        if field is self._keep_end and (value <= start or (ending > 0 and value >= ending)):
+            return "End narration at must stay between Resume audio at and the retained ending."
+        if field is self._ending_resume and value <= end:
+            return "The retained ending must start after End narration at."
+        return None
 
     def _show_review(self, path: Path, duration: float) -> None:
         """Load a chapter's saved cut points into the controls without triggering a save."""
@@ -1102,6 +1252,7 @@ class MainWindow(QMainWindow):
         self._playback_timer.start()
 
     def _on_position_changed(self, position: int) -> None:
+        self._waveform.set_playhead(position / 1000 if self._pending_preview is not None else None)
         if self._pending_preview is not None and position >= self._pending_preview[1]:
             self._advance_preview()
 
@@ -1124,6 +1275,7 @@ class MainWindow(QMainWindow):
         self._playback_timer.stop()
         self._reset_active_preview_button()
         self._player.stop()
+        self._waveform.set_playhead(None)
         self._status.setText(status_message)
 
     def _on_player_error(self, _error, message: str) -> None:

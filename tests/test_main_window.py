@@ -748,3 +748,63 @@ def test_chapter_ending_button_toggles_and_skips_removed_outro(tmp_path, monkeyp
     window._stop_preview()
     window.close()
     application.processEvents()
+
+
+def _waveform_window(tmp_path, monkeypatch):
+    from librivox_trimmer.waveform import FrameGrid
+
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    path = tmp_path / "chapter.mp3"
+    monkeypatch.setattr(main_window, "read_track", lambda _path: (120, "Chapter", "Reader"))
+    window._add_tracks([path], persist=False)
+    window._track_list.setCurrentRow(0)
+    grid = FrameGrid(origin=0.0021, frame_seconds=576 / 22050)
+    window._frame_grids[path.resolve()] = grid
+    window._keep_start.setValue(10)
+    window._keep_end.setValue(100)
+    return application, window, grid
+
+
+def test_waveform_click_writes_frame_snapped_value_to_selected_field(tmp_path, monkeypatch):
+    application, window, grid = _waveform_window(tmp_path, monkeypatch)
+    window._waveform_field.setCurrentIndex(1)
+    boundary = grid.origin + 400 * grid.frame_seconds
+
+    window._apply_waveform_cut(boundary)
+
+    assert window._keep_start.value() == round(boundary + grid.frame_seconds / 2, 2)
+    assert grid.exported_cut(window._keep_start.value(), starts_kept_audio=True) == pytest.approx(boundary)
+    assert window._review(window._tracks[0]).keep_start_seconds == window._keep_start.value()
+
+    window._waveform_field.setCurrentIndex(2)
+    end_boundary = grid.origin + 3500 * grid.frame_seconds
+    window._apply_waveform_cut(end_boundary)
+    assert grid.exported_cut(window._keep_end.value(), starts_kept_audio=False) == pytest.approx(end_boundary)
+    window.close()
+    application.processEvents()
+
+
+def test_waveform_refuses_cuts_out_of_order(tmp_path, monkeypatch):
+    application, window, grid = _waveform_window(tmp_path, monkeypatch)
+    window._waveform_field.setCurrentIndex(0)
+
+    window._apply_waveform_cut(grid.origin + 600 * grid.frame_seconds)
+
+    assert window._notice_start.value() == 0
+    assert "before Resume audio at" in window._status.text()
+    window.close()
+    application.processEvents()
+
+
+def test_focusing_a_time_field_selects_it_for_the_waveform(tmp_path, monkeypatch):
+    application, window, _grid = _waveform_window(tmp_path, monkeypatch)
+    window.show()
+    application.processEvents()
+
+    window._keep_end.setFocus()
+    application.processEvents()
+
+    assert window._waveform_field.currentText() == "End narration at"
+    window.close()
+    application.processEvents()
