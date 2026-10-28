@@ -4,6 +4,7 @@ import threading
 from dataclasses import replace
 
 from PySide6.QtCore import QEvent, QThreadPool, QTimer, Qt, QUrl, Slot
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -746,6 +747,7 @@ class MainWindow(QMainWindow):
             list_item = QListWidgetItem(self._track_item_text(path))
             list_item.setData(Qt.ItemDataRole.UserRole, str(path))
             list_item.setToolTip(self._review_tooltip(path))
+            self._style_review_item(list_item, path)
             self._track_list.addItem(list_item)
 
         self._track_count.setText(f"{len(self._tracks)} chapter(s)")
@@ -778,6 +780,15 @@ class MainWindow(QMainWindow):
             label += " [Review outro]"
         return label
 
+    def _style_review_item(self, item: QListWidgetItem, path: Path) -> None:
+        review = self._review(path)
+        if review.intro_review_reason or review.outro_review_reason:
+            item.setBackground(QBrush(QColor("#fff7c2")))
+            item.setForeground(QBrush(QColor("#202020")))
+        else:
+            item.setData(Qt.ItemDataRole.BackgroundRole, None)
+            item.setData(Qt.ItemDataRole.ForegroundRole, None)
+
     def _review_tooltip(self, path: Path) -> str:
         review = self._review(path)
         parts = []
@@ -796,6 +807,7 @@ class MainWindow(QMainWindow):
         if item is not None:
             item.setText(self._track_item_text(path))
             item.setToolTip(self._review_tooltip(path))
+            self._style_review_item(item, path)
 
     def _refresh_all_track_items(self) -> None:
         for row, path in enumerate(self._tracks):
@@ -803,6 +815,7 @@ class MainWindow(QMainWindow):
             if item is not None:
                 item.setText(self._track_item_text(path))
                 item.setToolTip(self._review_tooltip(path))
+                self._style_review_item(item, path)
 
     def _write_project(self) -> ProjectDocument:
         return write_project(

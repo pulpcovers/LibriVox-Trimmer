@@ -425,6 +425,27 @@ def test_batch_detection_continues_after_a_chapter_failure(tmp_path, monkeypatch
     assert streamed_results == results
 
 
+def test_batch_progress_names_the_chapter_only_once(tmp_path, monkeypatch):
+    path = tmp_path / "chapter01.mp3"
+    monkeypatch.setattr(detection, "read_track", lambda _path: (600, "The Long Title", "Reader"))
+
+    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter):
+        progress_callback("Analyzing chapter: The Long Title (outro)...")
+        progress_callback("Checking first 10 seconds: The Long Title...")
+        return detection.BoundaryDetection(intro=None, outro=None)
+
+    monkeypatch.setattr(detection, "analyze_track_boundaries", analyze)
+    progress: list = []
+
+    detection.analyze_tracks_boundaries([path], progress_callback=progress.append)
+
+    messages = [item for item in progress if isinstance(item, str) and "Analyzing" in item or "Checking first" in str(item)]
+    assert messages == [
+        "Chapter 1 of 1: The Long Title: Analyzing chapter (outro)...",
+        "Chapter 1 of 1: The Long Title: Checking first 10 seconds...",
+    ]
+
+
 def test_cancelling_track_batch_keeps_finished_chapters_only(tmp_path, monkeypatch):
     paths = [tmp_path / f"chapter0{index}.mp3" for index in range(1, 4)]
     monkeypatch.setattr(detection, "read_track", lambda path: (600, path.stem, "Reader"))

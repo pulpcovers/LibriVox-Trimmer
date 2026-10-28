@@ -61,20 +61,14 @@ def test_open_project_dialog_starts_in_app_projects_folder(tmp_path, monkeypatch
     application.processEvents()
 
 
-def test_status_text_is_selectable_for_copying_paths():
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_status_text_is_selectable_for_copying_paths(window):
     flags = window._status.textInteractionFlags()
 
     assert flags & Qt.TextInteractionFlag.TextSelectableByMouse
     assert flags & Qt.TextInteractionFlag.TextSelectableByKeyboard
-    window.close()
-    application.processEvents()
 
 
-def test_help_menu_follows_settings_and_opens_workflow_guide(monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_help_menu_follows_settings_and_opens_workflow_guide(window, monkeypatch):
     menus = window.menuBar().actions()
     captured = {}
     monkeypatch.setattr(
@@ -92,14 +86,9 @@ def test_help_menu_follows_settings_and_opens_workflow_guide(monkeypatch):
     assert "Fetch chapters" in captured["text"]
     assert "Analyse all chapters" in captured["text"]
     assert "Export trimmed chapter" in captured["text"]
-    window.close()
-    application.processEvents()
 
 
-def test_download_progress_displays_percentage_and_byte_fallback():
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
-
+def test_download_progress_displays_percentage_and_byte_fallback(window):
     window._on_worker_progress(DownloadProgress(2 * 1024 * 1024, 10 * 1024 * 1024))
 
     assert window._activity_progress.minimum() == 0
@@ -112,8 +101,6 @@ def test_download_progress_displays_percentage_and_byte_fallback():
     assert window._activity_progress.minimum() == 0
     assert window._activity_progress.maximum() == 0
     assert window._status.text() == "Downloading audiobook: 3.0 MB received"
-    window.close()
-    application.processEvents()
 
 
 def test_startup_cleans_incomplete_download_and_reports_it(tmp_path, monkeypatch):
@@ -132,9 +119,7 @@ def test_startup_cleans_incomplete_download_and_reports_it(tmp_path, monkeypatch
     application.processEvents()
 
 
-def test_preview_buttons_toggle_stop_replay_and_switching(monkeypatch, tmp_path):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_preview_buttons_toggle_stop_replay_and_switching(window, monkeypatch, tmp_path):
     source_path = tmp_path / "chapter.mp3"
     source_url = QUrl.fromLocalFile(str(source_path.resolve()))
     window._set_track_controls_enabled(True)
@@ -199,14 +184,9 @@ def test_preview_buttons_toggle_stop_replay_and_switching(monkeypatch, tmp_path)
     assert window._pending_preview is None
     assert player.play_calls == 3
 
-    window.close()
-    application.processEvents()
-
 
 @pytest.mark.parametrize("review_reason", [None, "No clear pause; preview this cut."])
-def test_bulk_detection_applies_each_result_and_summarizes_failures(tmp_path, monkeypatch, review_reason):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_bulk_detection_applies_each_result_and_summarizes_failures(window, tmp_path, monkeypatch, review_reason):
     suggested_path = tmp_path / "chapter01.mp3"
     unmatched_path = tmp_path / "chapter02.mp3"
     failed_path = tmp_path / "chapter03.mp3"
@@ -252,13 +232,9 @@ def test_bulk_detection_applies_each_result_and_summarizes_failures(tmp_path, mo
     assert window._track_list.item(0).toolTip() == ("Intro: " + review_reason if review_reason else "")
     assert ("[Review intro]" in window._track_list.item(0).text()) == bool(review_reason)
     assert ("1 chapter(s) need review" in window._status.text()) == bool(review_reason)
-    window.close()
-    application.processEvents()
 
 
-def test_bulk_unmatched_chapter_with_untranscribed_speech_is_marked_for_review(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_bulk_unmatched_chapter_with_untranscribed_speech_is_marked_for_review(window, tmp_path, monkeypatch):
     path = tmp_path / "chapter01.mp3"
     window._tracks = [path]
     item = QListWidgetItem(path.name)
@@ -274,15 +250,12 @@ def test_bulk_unmatched_chapter_with_untranscribed_speech_is_marked_for_review(t
     assert window._track_list.item(0).toolTip() == "Intro: " + reason
     assert "[Review intro]" in window._track_list.item(0).text()
     assert "1 chapter(s) need review" in window._status.text()
-    window.close()
-    application.processEvents()
 
 
-def test_review_warnings_are_restored_when_project_is_reopened(tmp_path, monkeypatch):
+def test_review_warnings_are_restored_when_project_is_reopened(window, tmp_path, monkeypatch):
     from librivox_trimmer import project as project_module
     from librivox_trimmer.project import TrackReview, save_project
 
-    application = QApplication.instance() or QApplication([])
     stub = lambda path: (600.0, path.stem, "Reader")
     monkeypatch.setattr(project_module, "read_track", stub)
     monkeypatch.setattr(main_window, "read_track", stub)
@@ -299,21 +272,16 @@ def test_review_warnings_are_restored_when_project_is_reopened(tmp_path, monkeyp
         )},
     )
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(project_path), ""))
-    window = MainWindow()
 
     window._open_project()
 
     assert "[Review" not in window._track_list.item(0).text()
     assert "[Review intro] [Review outro]" in window._track_list.item(1).text()
     assert window._track_list.item(1).toolTip() == f"Intro: {reason}\nOutro: {outro_reason}"
-    window.close()
-    application.processEvents()
 
 
 @pytest.mark.parametrize("detect_intro,expected", [(True, None), (False, "Earlier warning.")])
-def test_rerun_clears_review_warning_only_when_intro_was_analyzed(tmp_path, monkeypatch, detect_intro, expected):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_rerun_clears_review_warning_only_when_intro_was_analyzed(window, tmp_path, monkeypatch, detect_intro, expected):
     path = tmp_path / "chapter01.mp3"
     window._tracks = [path]
     item = QListWidgetItem(path.name)
@@ -328,13 +296,9 @@ def test_rerun_clears_review_warning_only_when_intro_was_analyzed(tmp_path, monk
 
     assert window._review(path).intro_review_reason == expected
     assert ("[Review intro]" in window._track_list.item(0).text()) == bool(expected)
-    window.close()
-    application.processEvents()
 
 
-def test_detect_all_button_queues_all_tracks_with_progress(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_detect_all_button_queues_all_tracks_with_progress(window, tmp_path, monkeypatch):
     paths = [tmp_path / "chapter01.mp3", tmp_path / "chapter02.mp3"]
     window._tracks = paths
     window._set_track_controls_enabled(True)
@@ -378,25 +342,17 @@ def test_detect_all_button_queues_all_tracks_with_progress(tmp_path, monkeypatch
     assert not window._detect_all_button.isEnabled()
     window._finish_worker()
     assert window._detect_all_button.text() == "Analyse all chapters"
-    window.close()
-    application.processEvents()
 
 
-def test_cancelled_bulk_analysis_reports_kept_chapters(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_cancelled_bulk_analysis_reports_kept_chapters(window, monkeypatch):
     monkeypatch.setattr(window, "_save_project_without_dialog", lambda: None)
 
     window._bulk_detection_finished([], cancelled=True, total=3)
 
     assert window._status.text().startswith("Analysis cancelled: kept results for 0 of 3 chapters")
-    window.close()
-    application.processEvents()
 
 
-def test_export_all_requires_confirmation_before_opening_folder(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_export_all_requires_confirmation_before_opening_folder(window, tmp_path, monkeypatch):
     window._tracks = [tmp_path / "chapter01.mp3"]
     captured = {}
 
@@ -422,13 +378,9 @@ def test_export_all_requires_confirmation_before_opening_folder(tmp_path, monkey
     assert "all loaded chapters" in captured["warning"].lower()
     assert "validated every cut point" in captured["warning"].lower()
     assert captured["default"] == main_window.QMessageBox.StandardButton.No
-    window.close()
-    application.processEvents()
 
 
-def test_export_all_uses_each_chapters_saved_cut_settings(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_export_all_uses_each_chapters_saved_cut_settings(window, tmp_path, monkeypatch):
     paths = [tmp_path / "chapter01.mp3", tmp_path / "chapter02.mp3"]
     window._tracks = paths
     window._review(paths[0]).keep_start_seconds = 8
@@ -473,32 +425,22 @@ def test_export_all_uses_each_chapters_saved_cut_settings(tmp_path, monkeypatch)
     assert len(progress) == 2
     assert captured["on_success"] == window._export_all_finished
     assert captured["options"] == {"with_progress": True}
-    window.close()
-    application.processEvents()
 
 
-def test_detect_all_button_is_above_chapter_list():
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_detect_all_button_is_above_chapter_list(window, qapp):
     window.resize(900, 590)
     window.show()
-    application.processEvents()
+    qapp.processEvents()
 
     assert window._detect_all_button.geometry().bottom() < window._track_list.geometry().top()
 
-    window.close()
-    application.processEvents()
-
 
 @pytest.mark.parametrize("size", [(900, 590), (1200, 760)])
-def test_chapter_editor_separates_detection_cuts_review_and_export(size, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(main_window, "cleanup_incomplete_downloads", lambda _folder: [])
-    window = MainWindow()
+def test_chapter_editor_separates_detection_cuts_review_and_export(size, window, qapp):
     window.resize(*size)
     window._set_track_controls_enabled(True)
     window.show()
-    application.processEvents()
+    qapp.processEvents()
 
     def rect(widget):
         return QRect(widget.mapTo(window.centralWidget(), QPoint(0, 0)), widget.size())
@@ -522,16 +464,12 @@ def test_chapter_editor_separates_detection_cuts_review_and_export(size, monkeyp
 
     original_rect = rect(window._preview_intro_button)
     window._preview_intro_button.setText("Stop intro preview")
-    application.processEvents()
+    qapp.processEvents()
     assert rect(window._preview_intro_button) == original_rect
     assert not window._preview_intro_button.icon().isNull()
-    window.close()
-    application.processEvents()
 
 
-def test_switching_to_shorter_chapter_does_not_save_previous_range(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_switching_to_shorter_chapter_does_not_save_previous_range(window, tmp_path, monkeypatch):
     long_chapter = tmp_path / "chapter01.mp3"
     short_chapter = tmp_path / "chapter02.mp3"
     durations = {long_chapter: 2000.0, short_chapter: 600.0}
@@ -561,14 +499,9 @@ def test_switching_to_shorter_chapter_does_not_save_previous_range(tmp_path, mon
 
     assert window._keep_start.value() == 700
     assert window._keep_end.value() == 1800
-    window.close()
-    application.processEvents()
 
 
-def test_preferences_apply_without_changing_trim_ranges(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(main_window, "load_settings", lambda: AppSettings())
-    window = MainWindow()
+def test_preferences_apply_without_changing_trim_ranges(window, tmp_path, monkeypatch):
     path = tmp_path / "chapter.mp3"
     window._review(path).keep_start_seconds, window._review(path).keep_end_seconds = 8, 500
     updated = AppSettings(
@@ -599,17 +532,10 @@ def test_preferences_apply_without_changing_trim_ranges(tmp_path, monkeypatch):
     assert not window._settings_action.isEnabled()
     window._set_busy(False)
     assert window._settings_action.isEnabled()
-    window.close()
-    application.processEvents()
 
 
-def test_interior_notice_range_survives_switching_and_previews_intro_intervals(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    first = tmp_path / "01.mp3"
-    second = tmp_path / "02.mp3"
-    monkeypatch.setattr(main_window, "read_track", lambda path: (100, path.stem, "Reader"))
-    window._add_tracks([first, second], persist=False)
+def test_interior_notice_range_survives_switching_and_previews_intro_intervals(window, add_chapters, monkeypatch):
+    first, second = add_chapters("01.mp3", "02.mp3")
     window._on_worker_progress(TrackBoundaryResult(
         first,
         BoundaryDetection(
@@ -633,14 +559,9 @@ def test_interior_notice_range_survives_switching_and_previews_intro_intervals(t
     window._preview_kept_intro()
     assert calls[-1][0][:2] == (0, 4.25)
     assert calls[-1][1]["following_intervals"] == [(15, 100)]
-    window.close()
-    application.processEvents()
 
 
-def test_preview_advances_to_following_retained_interval():
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
-
+def test_preview_advances_to_following_retained_interval(window):
     class Player:
         position = None
 
@@ -655,17 +576,10 @@ def test_preview_advances_to_following_retained_interval():
     assert player.position == 15000
     assert window._pending_preview == (15000, 100000)
     assert window._preview_queue == []
-    window.close()
-    application.processEvents()
 
 
-def test_final_chapter_keeps_book_ending_in_preview_and_saved_ranges(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    first = tmp_path / "01.mp3"
-    last = tmp_path / "28.mp3"
-    monkeypatch.setattr(main_window, "read_track", lambda path: (200, path.stem, "Author"))
-    window._add_tracks([first, last], persist=False)
+def test_final_chapter_keeps_book_ending_in_preview_and_saved_ranges(window, add_chapters, monkeypatch):
+    first, last = add_chapters("01.mp3", "28.mp3", duration=200)
     window._track_list.setCurrentRow(1)
     result = TrackBoundaryResult(
         last,
@@ -688,8 +602,6 @@ def test_final_chapter_keeps_book_ending_in_preview_and_saved_ranges(tmp_path, m
     window._preview_kept_intro()
     assert calls[-1][0][:2] == (0, 170)
     assert calls[-1][1]["following_intervals"] == [(174, 200)]
-    window.close()
-    application.processEvents()
 
 
 @pytest.mark.parametrize("keep_start,keep_end,resume,expected_start,following", [
@@ -699,10 +611,8 @@ def test_final_chapter_keeps_book_ending_in_preview_and_saved_ranges(tmp_path, m
     (0, 120, 0, 115, []),
 ])
 def test_chapter_ending_preview_uses_retained_intervals(
-    tmp_path, monkeypatch, keep_start, keep_end, resume, expected_start, following,
+    window, tmp_path, monkeypatch, keep_start, keep_end, resume, expected_start, following,
 ):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
     path = tmp_path / "chapter.mp3"
     monkeypatch.setattr(window, "_selected_path", lambda: path)
     monkeypatch.setattr(main_window, "read_track", lambda _path: (120, "Chapter", "Reader"))
@@ -717,13 +627,9 @@ def test_chapter_ending_preview_uses_retained_intervals(
     assert calls[0][0][:2] == (expected_start, keep_end)
     assert calls[0][0][2] is window._preview_ending_button
     assert calls[0][1]["following_intervals"] == following
-    window.close()
-    application.processEvents()
 
 
-def test_chapter_ending_button_toggles_and_skips_removed_outro(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_chapter_ending_button_toggles_and_skips_removed_outro(window, tmp_path, monkeypatch):
     path = tmp_path / "chapter.mp3"
     monkeypatch.setattr(window, "_selected_path", lambda: path)
     monkeypatch.setattr(main_window, "read_track", lambda _path: (120, "Chapter", "Reader"))
@@ -769,28 +675,23 @@ def test_chapter_ending_button_toggles_and_skips_removed_outro(tmp_path, monkeyp
     button.click()
     assert player.play_calls == 2
     window._stop_preview()
-    window.close()
-    application.processEvents()
 
 
-def _waveform_window(tmp_path, monkeypatch):
+@pytest.fixture
+def frame_grid(window, add_chapters):
     from librivox_trimmer.waveform import FrameGrid
 
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    path = tmp_path / "chapter.mp3"
-    monkeypatch.setattr(main_window, "read_track", lambda _path: (120, "Chapter", "Reader"))
-    window._add_tracks([path], persist=False)
+    (path,) = add_chapters("chapter.mp3", duration=120)
     window._track_list.setCurrentRow(0)
     grid = FrameGrid(origin=0.0021, frame_seconds=576 / 22050)
     window._frame_grids[path.resolve()] = grid
     window._keep_start.setValue(10)
     window._keep_end.setValue(100)
-    return application, window, grid
+    return grid
 
 
-def test_waveform_click_writes_frame_snapped_value_to_selected_field(tmp_path, monkeypatch):
-    application, window, grid = _waveform_window(tmp_path, monkeypatch)
+def test_waveform_click_writes_frame_snapped_value_to_selected_field(window, frame_grid):
+    grid = frame_grid
     window._waveform_field.setCurrentIndex(1)
     boundary = grid.origin + 400 * grid.frame_seconds
 
@@ -804,24 +705,19 @@ def test_waveform_click_writes_frame_snapped_value_to_selected_field(tmp_path, m
     end_boundary = grid.origin + 3500 * grid.frame_seconds
     window._apply_waveform_cut(end_boundary)
     assert grid.exported_cut(window._keep_end.value(), starts_kept_audio=False) == pytest.approx(end_boundary)
-    window.close()
-    application.processEvents()
 
 
-def test_waveform_refuses_cuts_out_of_order(tmp_path, monkeypatch):
-    application, window, grid = _waveform_window(tmp_path, monkeypatch)
+def test_waveform_refuses_cuts_out_of_order(window, frame_grid):
+    grid = frame_grid
     window._waveform_field.setCurrentIndex(0)
 
     window._apply_waveform_cut(grid.origin + 600 * grid.frame_seconds)
 
     assert window._notice_start.value() == 0
     assert "before Resume audio at" in window._status.text()
-    window.close()
-    application.processEvents()
 
 
-def test_preview_buttons_switch_waveform_to_first_cut_played(tmp_path, monkeypatch):
-    application, window, _grid = _waveform_window(tmp_path, monkeypatch)
+def test_preview_buttons_switch_waveform_to_first_cut_played(window, frame_grid, monkeypatch):
     window._set_track_controls_enabled(True)
     started = []
     monkeypatch.setattr(window, "_start_pending_preview", lambda: started.append(True))
@@ -850,13 +746,9 @@ def test_preview_buttons_switch_waveform_to_first_cut_played(tmp_path, monkeypat
     window._preview_ending_button.click()
     assert label() == "End narration at"
     window._stop_preview()
-    window.close()
-    application.processEvents()
 
 
-def test_clean_up_releases_the_media_player_before_deleting(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_clean_up_releases_the_media_player_before_deleting(window, tmp_path, monkeypatch):
     window._project_path = tmp_path / "book.lvproj"
     window._tracks = [tmp_path / "chapter.mp3"]
     monkeypatch.setattr(main_window.QMessageBox, "question", lambda *a, **k: main_window.QMessageBox.StandardButton.Yes)
@@ -867,13 +759,9 @@ def test_clean_up_releases_the_media_player_before_deleting(tmp_path, monkeypatc
     window._clean_up_project()
 
     assert seen == [True]
-    window.close()
-    application.processEvents()
 
 
-def test_failed_automatic_save_shows_one_error_dialog_until_a_save_succeeds(tmp_path, monkeypatch):
-    application = QApplication.instance() or QApplication([])
-    window = MainWindow()
+def test_failed_automatic_save_shows_one_error_dialog_until_a_save_succeeds(window, tmp_path, monkeypatch):
     window._project_path = tmp_path / "book.lvproj"
     dialogs = []
     monkeypatch.setattr(
@@ -898,18 +786,26 @@ def test_failed_automatic_save_shows_one_error_dialog_until_a_save_succeeds(tmp_
     outcome["fail"] = True
     window._save_project_without_dialog()
     assert len(dialogs) == 2
-    window.close()
-    application.processEvents()
 
 
-def test_focusing_a_time_field_selects_it_for_the_waveform(tmp_path, monkeypatch):
-    application, window, _grid = _waveform_window(tmp_path, monkeypatch)
+def test_chapters_with_review_flags_are_highlighted_yellow(window, add_chapters):
+    paths = add_chapters("a.mp3", "b.mp3")
+    window._review(paths[1]).outro_review_reason = "Check the ending"
+
+    window._refresh_all_track_items()
+
+    assert window._track_list.item(0).background().style() == Qt.BrushStyle.NoBrush
+    assert window._track_list.item(1).background().color().name() == "#fff7c2"
+    window._review(paths[1]).outro_review_reason = ""
+    window._refresh_track_item(paths[1])
+    assert window._track_list.item(1).background().style() == Qt.BrushStyle.NoBrush
+
+
+def test_focusing_a_time_field_selects_it_for_the_waveform(window, frame_grid, qapp):
     window.show()
-    application.processEvents()
+    qapp.processEvents()
 
     window._keep_end.setFocus()
-    application.processEvents()
+    qapp.processEvents()
 
     assert window._waveform_field.currentText() == "End narration at"
-    window.close()
-    application.processEvents()

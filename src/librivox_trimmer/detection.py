@@ -474,7 +474,9 @@ def analyze_tracks_boundaries(
             if cancelled():
                 raise AnalysisCancelled
             if progress_callback is not None:
-                progress_callback(f"{prefix}: {message}")
+                # The prefix already names the chapter; drop the title the step message repeats.
+                short = message.replace(f": {title}", "").replace(f" {title}", "") if title else message
+                progress_callback(f"{prefix}: {short}")
 
         try:
             options = {
