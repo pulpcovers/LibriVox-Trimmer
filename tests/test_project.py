@@ -116,6 +116,80 @@ def test_load_project_rejects_relative_path_traversal(tmp_path):
         load_project(project_path)
 
 
+def test_load_project_refuses_network_paths_unless_allowed(tmp_path):
+    project_path = tmp_path / "Shared.lvproj"
+    network_path = r"\\attacker.example\share\chapter.mp3"
+    project_path.write_text(
+        json.dumps({
+            "format_version": 1,
+            "tracks": [{"file": {"type": "absolute", "path": network_path}, "review": {}}],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(project_module.NetworkPathError) as error:
+        load_project(project_path)
+
+    assert error.value.path == network_path
+    assert load_project(project_path, allow_network_paths=True).tracks[0].path == Path(network_path)
+
+
+def test_cleanup_refuses_to_delete_a_folder_with_foreign_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
+    project_path = tmp_path / "Book.lvproj"
+    assets_dir = project_assets_dir(project_path)
+    track = assets_dir / "chapters" / "01.mp3"
+    track.parent.mkdir(parents=True)
+    track.write_bytes(b"downloaded")
+    (assets_dir / "notes.docx").write_bytes(b"someone's file")
+    save_project(project_path, [track], managed_audio_dir=assets_dir)
+
+    with pytest.raises(ValueError, match="not downloaded by this app"):
+        cleanup_project(project_path)
+
+    assert (assets_dir / "notes.docx").exists()
+    assert project_path.exists()
+
+
+def test_import_tracks_copies_files_handles_collisions_and_leaves_originals(tmp_path):
+    first = tmp_path / "a" / "01.mp3"
+    other = tmp_path / "b" / "01.mp3"
+    for path, data in ((first, b"one"), (other, b"different size")):
+        path.parent.mkdir()
+        path.write_bytes(data)
+    project_path = tmp_path / "Book.lvproj"
+    messages = []
+
+    mapping = project_module.import_tracks(project_path, [first, other], progress_callback=messages.append)
+
+    chapters = project_assets_dir(project_path) / "chapters"
+    assert mapping[first] == chapters / "01.mp3"
+    assert mapping[other] == chapters / "01 (2).mp3"
+    assert (chapters / "01 (2).mp3").read_bytes() == b"different size"
+    assert first.exists() and other.exists()
+    assert (project_assets_dir(project_path) / ".librivox-trimmer-managed").is_file()
+    assert len(messages) == 2
+
+    again = project_module.import_tracks(project_path, [first, mapping[first]])
+
+    assert again == {first: chapters / "01.mp3", mapping[first]: (chapters / "01.mp3").resolve()}
+    assert sorted(path.name for path in chapters.iterdir()) == ["01 (2).mp3", "01.mp3"]
+
+
+def test_import_tracks_refuses_a_foreign_files_folder(tmp_path):
+    source = tmp_path / "01.mp3"
+    source.write_bytes(b"mp3")
+    project_path = tmp_path / "Book.lvproj"
+    foreign = project_assets_dir(project_path)
+    foreign.mkdir()
+    (foreign / "photo.png").write_bytes(b"x")
+
+    with pytest.raises(ValueError, match="not created by this app"):
+        project_module.import_tracks(project_path, [source])
+
+    assert not (foreign / "chapters").exists()
+
+
 def test_new_project_path_uses_url_slug_and_avoids_existing_projects(tmp_path):
     projects_directory = tmp_path / "Documents" / "LibriVox Projects"
     existing_project = projects_directory / "the-book.lvproj"

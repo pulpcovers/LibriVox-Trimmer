@@ -4,6 +4,7 @@ from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem
 
 from librivox_trimmer import main_window
+from librivox_trimmer import project as project_module
 from librivox_trimmer.boundary_detection import BoundaryDetection, BoundarySuggestion
 from librivox_trimmer.detection import TrackBoundaryResult
 from librivox_trimmer.main_window import MainWindow
@@ -272,6 +273,9 @@ def test_review_warnings_are_restored_when_project_is_reopened(window, tmp_path,
         )},
     )
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(project_path), ""))
+    monkeypatch.setattr(
+        main_window.QMessageBox, "question", lambda *_args: main_window.QMessageBox.StandardButton.No,
+    )
 
     window._open_project()
 
@@ -799,6 +803,102 @@ def test_chapters_with_review_flags_are_highlighted_yellow(window, add_chapters)
     window._review(paths[1]).outro_review_reason = ""
     window._refresh_track_item(paths[1])
     assert window._track_list.item(1).background().style() == Qt.BrushStyle.NoBrush
+
+
+def test_opening_a_project_with_network_paths_asks_first_and_can_be_declined(window, tmp_path, monkeypatch):
+    project_path = tmp_path / "Shared.lvproj"
+    project_path.write_text(
+        '{"format_version": 1, "tracks": [{"file": {"type": "absolute", '
+        '"path": "\\\\\\\\attacker.example\\\\share\\\\a.mp3"}, "review": {}}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(project_path), ""))
+    asked = []
+
+    def decline(_parent, title, text, *_args):
+        asked.append(text)
+        return main_window.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(main_window.QMessageBox, "warning", decline)
+    monkeypatch.setattr(
+        main_window.QMessageBox, "critical", lambda *_args: pytest.fail("Declining should not be an error"),
+    )
+
+    window._open_project()
+
+    assert len(asked) == 1 and "attacker.example" in asked[0]
+    assert window._tracks == []
+
+
+def _run_workers_inline(window, monkeypatch):
+    monkeypatch.setattr(
+        window, "_start_worker",
+        lambda function, on_success, message, **_kw: on_success(function(lambda _message: None)),
+    )
+
+
+def test_open_files_copies_them_into_a_new_named_project(window, tmp_path, monkeypatch):
+    from librivox_trimmer.project import load_project
+
+    monkeypatch.setattr(main_window, "read_track", lambda path: (100.0, path.stem, "Reader"))
+    monkeypatch.setattr(project_module, "read_track", lambda path: (100.0, path.stem, "Reader"))
+    source_dir = tmp_path / "My Downloads"
+    source_dir.mkdir()
+    sources = [source_dir / "02.mp3", source_dir / "01.mp3"]
+    for source in sources:
+        source.write_bytes(b"mp3 data")
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *_a, **_k: ([str(p) for p in sources], ""))
+    monkeypatch.setattr(main_window.QInputDialog, "getText", lambda *_a, **_k: ("Zenda", True))
+    _run_workers_inline(window, monkeypatch)
+
+    window._open_files()
+
+    project_path = tmp_path / "Projects" / "Zenda.lvproj"
+    chapters = project_module.project_assets_dir(project_path) / "chapters"
+    assert [path.name for path in window._tracks] == ["01.mp3", "02.mp3"]
+    assert all(path.resolve().parent == chapters.resolve() for path in window._tracks)
+    assert all(source.exists() for source in sources)
+    assert window._project_path == project_path
+    saved = load_project(project_path)
+    assert [track.path.parent for track in saved.tracks] == [chapters.resolve()] * 2
+
+
+def test_cancelling_the_project_name_prompt_imports_nothing(window, tmp_path, monkeypatch):
+    source = tmp_path / "01.mp3"
+    source.write_bytes(b"mp3")
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *_a, **_k: ([str(source)], ""))
+    monkeypatch.setattr(main_window.QInputDialog, "getText", lambda *_a, **_k: ("", False))
+    monkeypatch.setattr(window, "_start_worker", lambda *_a, **_k: pytest.fail("Nothing should be copied"))
+
+    window._open_files()
+
+    assert window._tracks == [] and window._project_path is None
+
+
+def test_opening_an_older_project_offers_to_copy_external_chapters(window, tmp_path, monkeypatch):
+    from librivox_trimmer.project import TrackReview, load_project, save_project
+
+    stub = lambda path: (600.0, path.stem, "Reader")
+    monkeypatch.setattr(project_module, "read_track", stub)
+    monkeypatch.setattr(main_window, "read_track", stub)
+    chapter = tmp_path / "elsewhere" / "chapter01.mp3"
+    chapter.parent.mkdir()
+    chapter.write_bytes(b"mp3")
+    project_path = tmp_path / "Book.lvproj"
+    save_project(project_path, [chapter], reviews={chapter.resolve(): TrackReview(2.5, 100.0)})
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(project_path), ""))
+    monkeypatch.setattr(
+        main_window.QMessageBox, "question", lambda *_args: main_window.QMessageBox.StandardButton.Yes,
+    )
+    _run_workers_inline(window, monkeypatch)
+
+    window._open_project()
+
+    chapters = project_module.project_assets_dir(project_path) / "chapters"
+    assert window._tracks[0].resolve().parent == chapters.resolve()
+    assert window._review(window._tracks[0]).keep_range == (2.5, 100.0)
+    assert chapter.exists()
+    assert load_project(project_path).tracks[0].path.parent == chapters.resolve()
 
 
 def test_focusing_a_time_field_selects_it_for_the_waveform(window, frame_grid, qapp):

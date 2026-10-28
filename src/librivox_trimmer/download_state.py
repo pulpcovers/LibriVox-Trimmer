@@ -6,6 +6,31 @@ from pathlib import Path
 import portalocker
 
 
+MANAGED_MARKER = ".librivox-trimmer-managed"
+
+
+def mark_managed_directory(directory: Path) -> None:
+    (directory / MANAGED_MARKER).write_text("Created by LibriVox Trimmer.\n", encoding="utf-8")
+
+
+def is_managed_assets_dir(directory: Path) -> bool:
+    """True for a folder this app created: it has the marker, or the layout of an older download."""
+    if directory.is_symlink() or not directory.is_dir():
+        return False
+    if (directory / MANAGED_MARKER).is_file():
+        return True
+    for entry in directory.iterdir():
+        if entry.is_symlink():
+            return False
+        if entry.is_dir() and entry.name == "chapters":
+            if any(item.is_symlink() or (item.is_file() and item.suffix.lower() != ".mp3")
+                   for item in entry.rglob("*")):
+                return False
+        elif not (entry.is_file() and entry.suffix.lower() == ".zip"):
+            return False
+    return True
+
+
 def _lock_path(projects_directory: Path, assets_directory: Path) -> Path:
     return projects_directory / f".{assets_directory.name}.lock"
 
@@ -28,7 +53,7 @@ def cleanup_incomplete_downloads(projects_directory: Path) -> list[Path]:
 
     removed: list[Path] = []
     for assets_directory in projects_directory.glob("*_files"):
-        if assets_directory.is_symlink() or not assets_directory.is_dir():
+        if not is_managed_assets_dir(assets_directory):
             continue
         project_name = assets_directory.name.removesuffix("_files")
         project_path = projects_directory / f"{project_name}.lvproj"

@@ -2,8 +2,27 @@ import portalocker
 
 from librivox_trimmer.download_state import (
     cleanup_incomplete_downloads,
+    is_managed_assets_dir,
     lock_download_directory,
+    mark_managed_directory,
 )
+
+
+def test_cleanup_leaves_unrelated_folders_that_only_look_like_download_folders(tmp_path):
+    projects_directory = tmp_path / "Projects"
+    saved_page = projects_directory / "Some Page_files"
+    saved_page.mkdir(parents=True)
+    (saved_page / "style.css").write_text("body {}", encoding="utf-8")
+    marked = projects_directory / "marked_files"
+    marked.mkdir()
+    (marked / "anything.bin").write_bytes(b"x")
+    mark_managed_directory(marked)
+
+    removed = cleanup_incomplete_downloads(projects_directory)
+
+    assert removed == [marked]
+    assert saved_page.exists()
+    assert not is_managed_assets_dir(saved_page)
 
 
 def test_cleanup_removes_orphaned_download_but_preserves_completed_project(tmp_path):

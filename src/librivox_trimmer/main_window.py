@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -39,18 +40,22 @@ from librivox_trimmer.detection import (
 from librivox_trimmer.download_state import (
     cleanup_incomplete_downloads,
     lock_download_directory,
+    mark_managed_directory,
 )
 from librivox_trimmer.librivox_client import download_project_archive
 from librivox_trimmer.metadata import read_track
 from librivox_trimmer.models import natural_path_key
 from librivox_trimmer.project import (
     PROJECT_SUFFIX,
+    NetworkPathError,
     ProjectDocument,
     TrackReview,
     cleanup_project,
     load_project,
+    new_project_path_for_name,
     new_project_path_for_url,
     project_assets_dir,
+    import_tracks,
     save_project as write_project,
 )
 from librivox_trimmer.progress import DownloadProgress
@@ -368,7 +373,8 @@ class MainWindow(QMainWindow):
             <h3>Trim an audiobook chapter</h3>
             <ol>
               <li>Paste a LibriVox project URL and choose <b>Fetch chapters</b>, or use
-                  <b>Open MP3 files</b> to load chapters from your computer.</li>
+                  <b>Open MP3 files</b> to copy chapters from your computer into a new
+                  project. Your original files are never changed.</li>
               <li>Select a chapter and choose <b>Analyse selected chapter</b>, or choose
                   <b>Analyse all chapters</b> to analyse the loaded list. Load the whole
                   book when detecting its first or last chapter so book-ending detection
@@ -392,8 +398,8 @@ class MainWindow(QMainWindow):
             <h3>Projects and preferences</h3>
             <p><b>Project &gt; Save Project</b> saves chapter locations, cut times,
                and review notes so you can continue later. Use <b>Open Project</b>
-               to resume. <b>Clean Up Project</b> deletes the project and its
-               downloaded chapter files.</p>
+               to resume. <b>Clean Up Project</b> deletes the project and the chapter
+               files stored with it; the original MP3s you imported are not touched.</p>
             <p><b>Settings &gt; Preferences</b> controls storage folders, download
                quality, and detection options. Changing detection preferences does
                not update saved cut times; run detection again to apply them.</p>
@@ -450,7 +456,89 @@ class MainWindow(QMainWindow):
             "MP3 audio (*.mp3)",
         )
         if filenames:
-            self._add_tracks([Path(filename) for filename in filenames])
+            self._import_files([Path(filename) for filename in filenames])
+
+    def _import_files(self, sources: list[Path]) -> None:
+        """Copy chosen MP3s into a project (creating one if needed) and work from the copies."""
+        sources = [path for path in sources if path.suffix.lower() == ".mp3"]
+        if not sources:
+            self._status.setText("No valid MP3 chapters found")
+            return
+        new_project = self._project_path is None
+        if new_project:
+            name, accepted = QInputDialog.getText(
+                self, "New project", "Project name:", text=sources[0].parent.name or "Audiobook",
+            )
+            if not accepted or not name.strip():
+                return
+            project_path = new_project_path_for_name(name.strip(), self._project_folder())
+        else:
+            project_path = self._project_path
+
+        def finished(mapping: dict[Path, Path]) -> None:
+            if new_project:
+                self._tracks.clear()
+                self._track_list.clear()
+                self._reviews.clear()
+                self._project_path = project_path
+                self._source_url = ""
+                self._has_missing_tracks = False
+                self._project_detection = self._settings.detection
+            self._managed_audio_dir = project_assets_dir(project_path)
+            self._add_tracks(list(mapping.values()))
+
+        self._start_worker(
+            lambda report_progress: import_tracks(
+                project_path, sources, progress_callback=report_progress,
+            ),
+            finished,
+            f"Copying {len(sources)} chapter(s) into the project...",
+            with_progress=True,
+        )
+
+    def _offer_import_external_tracks(self) -> None:
+        """Older projects can point at MP3s elsewhere; offer to copy them into the project."""
+        if self._project_path is None or self._has_missing_tracks:
+            return
+        assets_dir = project_assets_dir(self._project_path).resolve()
+        external = [path for path in self._tracks if not path.resolve().is_relative_to(assets_dir)]
+        if not external:
+            return
+        response = QMessageBox.question(
+            self,
+            "Copy chapters into the project",
+            f"{len(external)} chapter(s) are used directly from other folders.\n\n"
+            "Copy them into the project so it keeps working if those files are moved or "
+            "deleted? Your original files are not changed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        project_path = self._project_path
+
+        def finished(mapping: dict[Path, Path]) -> None:
+            for old, new in mapping.items():
+                review = self._reviews.pop(old.resolve(), None)
+                if review is not None:
+                    self._reviews[new.resolve()] = review
+            row = self._track_list.currentRow()
+            self._tracks[:] = [mapping.get(path, path) for path in self._tracks]
+            self._managed_audio_dir = project_assets_dir(project_path)
+            self._add_tracks([], persist=False)
+            if row >= 0:
+                self._track_list.setCurrentRow(row)
+            self._save_project_without_dialog()
+            self._status.setText(f"Copied {len(mapping)} chapter(s) into the project")
+
+        self._start_worker(
+            lambda report_progress: import_tracks(
+                project_path, external, progress_callback=report_progress,
+            ),
+            finished,
+            f"Copying {len(external)} chapter(s) into the project...",
+            with_progress=True,
+        )
 
     def _download_project(self) -> None:
         project_url = self._url_input.text().strip()
@@ -468,6 +556,7 @@ class MainWindow(QMainWindow):
         def download_and_extract(report_progress) -> ProjectDocument:
             with lock_download_directory(project_path.parent, assets_dir):
                 assets_dir.mkdir(parents=True, exist_ok=False)
+                mark_managed_directory(assets_dir)
                 try:
                     archive_path = download_project_archive(
                         project_url,
@@ -518,9 +607,11 @@ class MainWindow(QMainWindow):
         if not selected_path:
             return
         try:
-            project = load_project(Path(selected_path))
+            project = self._load_project_checked(Path(selected_path))
         except Exception as error:
             QMessageBox.critical(self, "Could not open project", str(error))
+            return
+        if project is None:
             return
 
         self._set_project(project)
@@ -546,6 +637,25 @@ class MainWindow(QMainWindow):
             )
         else:
             self._status.setText(f"Project resumed: {project.path}")
+            self._offer_import_external_tracks()
+
+    def _load_project_checked(self, path: Path) -> ProjectDocument | None:
+        """Load a project, asking first if it points at files on a network share."""
+        try:
+            return load_project(path)
+        except NetworkPathError as error:
+            response = QMessageBox.warning(
+                self,
+                "Project uses a network location",
+                f"This project refers to files on a network location:\n{error.path}\n\n"
+                "Opening it can send your Windows sign-in details to that server. "
+                "Only continue if you made or trust this project.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return None
+            return load_project(path, allow_network_paths=True)
 
     def _set_project(self, project: ProjectDocument) -> None:
         self._project_path = project.path
@@ -631,8 +741,8 @@ class MainWindow(QMainWindow):
         response = QMessageBox.question(
             self,
             "Clean up project",
-            "Delete this project file and its downloaded chapter files?\n\n"
-            "MP3 files opened from elsewhere will not be deleted.",
+            "Delete this project file and the chapter files stored with it?\n\n"
+            "MP3 files that are still used from other folders will not be deleted.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

@@ -6,16 +6,25 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Mapping
 from urllib.parse import unquote, urlparse
 
+from librivox_trimmer.download_state import is_managed_assets_dir, mark_managed_directory
 from librivox_trimmer.metadata import read_track
 from librivox_trimmer.settings import DetectionSettings
 
 
 PROJECT_FORMAT_VERSION = 1
 PROJECT_SUFFIX = ".lvproj"
+
+
+class NetworkPathError(ValueError):
+    """A project references files on a network share and was not allowed to touch them."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"This project refers to a file on a network location: {path}")
+        self.path = path
 
 
 @dataclass
@@ -64,7 +73,11 @@ def project_assets_dir(project_path: Path) -> Path:
 
 def new_project_path_for_url(project_url: str, projects_directory: Path) -> Path:
     url_path = urlparse(project_url).path.rstrip("/")
-    name = unquote(url_path.rsplit("/", 1)[-1]) or "librivox-project"
+    return new_project_path_for_name(unquote(url_path.rsplit("/", 1)[-1]), projects_directory)
+
+
+def new_project_path_for_name(name: str, projects_directory: Path) -> Path:
+    name = name or "librivox-project"
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", name).strip(" .")
     name = name[:100] or "librivox-project"
     projects_directory = projects_directory.expanduser()
@@ -87,12 +100,17 @@ def _path_reference(path: Path, project_directory: Path) -> dict[str, str]:
     return {"type": "relative", "path": relative_path.as_posix()}
 
 
-def _resolve_reference(reference: dict[str, str], project_directory: Path) -> Path:
+def _resolve_reference(
+    reference: dict[str, str], project_directory: Path, *, allow_network_paths: bool = False,
+) -> Path:
     path_type = reference.get("type")
     value = reference.get("path")
     if not isinstance(value, str) or not value:
         raise ValueError("Project contains an invalid file path.")
     if path_type == "absolute":
+        # Touching a network path makes Windows send the user's credentials to that server.
+        if not allow_network_paths and PureWindowsPath(value).drive.startswith("\\\\"):
+            raise NetworkPathError(value)
         return Path(value)
     if path_type != "relative":
         raise ValueError(f"Unsupported project path type: {path_type}")
@@ -125,7 +143,7 @@ def save_project(
     now = datetime.now(timezone.utc).isoformat()
     created_at = now
     if project_path.exists():
-        existing = load_project(project_path)
+        existing = load_project(project_path, allow_network_paths=True)
         created_at = existing.created_at
         if detection_settings is None:
             detection_settings = existing.detection_settings
@@ -212,10 +230,10 @@ def save_project(
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
         raise
-    return load_project(project_path)
+    return load_project(project_path, allow_network_paths=True)
 
 
-def load_project(project_path: Path) -> ProjectDocument:
+def load_project(project_path: Path, *, allow_network_paths: bool = False) -> ProjectDocument:
     project_path = project_path.resolve(strict=True)
     with project_path.open("r", encoding="utf-8") as project_file:
         payload = json.load(project_file)
@@ -230,7 +248,9 @@ def load_project(project_path: Path) -> ProjectDocument:
     if managed_reference is not None:
         if not isinstance(managed_reference, dict):
             raise ValueError("Project contains an invalid managed audio directory.")
-        managed_audio_dir = _resolve_reference(managed_reference, project_directory)
+        managed_audio_dir = _resolve_reference(
+            managed_reference, project_directory, allow_network_paths=allow_network_paths,
+        )
         if managed_audio_dir != project_assets_dir(project_path):
             raise ValueError("Project managed audio directory is not a recognized project folder.")
 
@@ -241,7 +261,9 @@ def load_project(project_path: Path) -> ProjectDocument:
     for raw_track in raw_tracks:
         if not isinstance(raw_track, dict) or not isinstance(raw_track.get("file"), dict):
             raise ValueError("Project contains an invalid track entry.")
-        path = _resolve_reference(raw_track["file"], project_directory)
+        path = _resolve_reference(
+            raw_track["file"], project_directory, allow_network_paths=allow_network_paths,
+        )
         review = raw_track.get("review", {})
         if not isinstance(review, dict):
             raise ValueError("Project contains invalid review settings.")
@@ -293,12 +315,61 @@ def load_project(project_path: Path) -> ProjectDocument:
     )
 
 
+def import_tracks(
+    project_path: Path,
+    sources: list[Path],
+    *,
+    progress_callback=None,
+) -> dict[Path, Path]:
+    """Copy MP3s into the project's own chapters folder; return each source mapped to its copy."""
+    assets_dir = project_assets_dir(project_path)
+    if assets_dir.exists() and not is_managed_assets_dir(assets_dir):
+        raise ValueError(
+            f"{assets_dir} already exists and was not created by this app, so chapters "
+            "cannot be copied into it."
+        )
+    chapters_dir = assets_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    mark_managed_directory(assets_dir)
+
+    mapping: dict[Path, Path] = {}
+    copied: list[Path] = []
+    try:
+        for index, source in enumerate(sources, start=1):
+            if progress_callback is not None:
+                progress_callback(f"Importing chapter {index} of {len(sources)}: {source.name}...")
+            if source.resolve().is_relative_to(chapters_dir.resolve()):
+                mapping[source] = source.resolve()
+                continue
+            target = chapters_dir / source.name
+            if target.exists() and target.stat().st_size == source.stat().st_size:
+                mapping[source] = target
+                continue
+            suffix = 2
+            while target.exists():
+                target = chapters_dir / f"{source.stem} ({suffix}){source.suffix}"
+                suffix += 1
+            shutil.copy2(source, target)
+            copied.append(target)
+            mapping[source] = target
+    except Exception:
+        for path in copied:
+            path.unlink(missing_ok=True)
+        raise
+    return mapping
+
+
 def cleanup_project(project_path: Path) -> None:
-    project = load_project(project_path)
+    project = load_project(project_path, allow_network_paths=True)
     if project.managed_audio_dir is not None:
         assets_dir = project.managed_audio_dir
         if assets_dir.is_symlink():
             raise ValueError("Refusing to clean up a project files directory that is a symbolic link.")
         if assets_dir.exists():
+            if not is_managed_assets_dir(assets_dir):
+                raise ValueError(
+                    f"Refusing to delete {assets_dir}: it contains files that were not "
+                    "downloaded by this app. Remove the folder yourself if you want it gone."
+                )
             shutil.rmtree(assets_dir)
     project.path.unlink()

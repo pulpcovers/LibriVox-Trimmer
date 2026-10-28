@@ -99,7 +99,10 @@ as passed; the number can change as the project evolves.
 ### Load Chapters
 
 Choose **Fetch chapters** and enter a LibriVox project URL, or choose **Open MP3
-files** to load local chapters. Load the whole book when possible: the first and
+files** to load local chapters. Opened files are copied into a new project (you
+name it), so the project keeps working if the originals are moved or deleted;
+the originals are never changed. Opening an older project that points at MP3s
+elsewhere offers to copy them in. Load the whole book when possible: the first and
 last chapters in the loaded list provide context for opening announcements and
 book endings.
 
