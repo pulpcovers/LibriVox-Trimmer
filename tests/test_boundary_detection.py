@@ -230,6 +230,39 @@ def test_reader_credit_is_not_attached_across_intervening_narration():
     assert result.intro.keep_time_seconds < credit[0].start
 
 
+def test_unbounded_unpunctuated_credit_keeps_uncertain_speech_without_title_metadata():
+    notice = make_words("This is a LibriVox recording.")
+    credit = make_words("Recording by Nigel Fisher", start=2.7)
+    story = make_words("Our reception in Kalnagar The Royal City never contained such splendor", start=4.2)
+
+    result = detect_boundaries(notice + credit + story, [])
+
+    assert result.intro.reader_credit_start_seconds == credit[0].start
+    assert result.intro.reader_credit_end_seconds is None
+    assert result.intro.notice_end_seconds == notice[-1].end
+    assert result.intro.keep_time_seconds <= credit[0].start
+
+
+def test_unpunctuated_reader_credit_stops_before_known_chapter_title():
+    notice = make_words("This LibriVox recording is in the public domain", start=5)
+    credit = [
+        TimedWord("recording", 8.72, 9.90), TimedWord("by", 9.90, 10.44),
+        TimedWord("Nigel", 10.44, 10.68), TimedWord("Fisher", 10.68, 11.06),
+    ]
+    heading = [
+        TimedWord("Our", 11.06, 12.32), TimedWord("reception", 12.32, 12.64),
+        TimedWord("in", 12.64, 13.32), TimedWord("Kalnagar", 13.32, 13.82),
+    ]
+    narration = make_words("The Royal City of Kalnagar never contained such splendor", start=13.82)
+
+    result = detect_boundaries(
+        notice + credit + heading + narration, [], chapter_title="56 - Our Reception in Calnogor",
+    )
+
+    assert result.intro.notice_end_seconds == credit[-1].end
+    assert result.intro.keep_time_seconds < heading[0].end
+
+
 def test_last_chapter_can_pair_numbered_marker_with_prefixed_book_title():
     first_pass = make_words("Chapter VIII In Dove Conan Beyon the Black River", start=100)
     title_pass = make_words("End of Conan Beyond the Black River by Robert E Howard", start=101.5)

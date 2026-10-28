@@ -57,6 +57,10 @@ class BoundarySuggestion:
     notice_end_seconds: float | None = None
     # Cut after the spoken chapter number, used instead only if a clear pause follows it.
     heading_cut_seconds: float | None = None
+    reader_credit_start_seconds: float | None = None
+    reader_credit_end_seconds: float | None = None
+    notice_only_end_seconds: float | None = None
+    reader_credit_prefix_end_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +180,7 @@ def _find_phrase_matches(
 def detect_intro_boundary(
     words: Sequence[TimedWord], *, safety_gap_seconds: float = 0.6,
     retain_reader_credit: bool = False,
+    chapter_title: str = "",
 ) -> BoundarySuggestion | None:
     matches = _find_phrase_matches(words, INTRO_PHRASES)
     if not matches:
@@ -200,7 +205,17 @@ def detect_intro_boundary(
     )
     matched_text = "; ".join(match.text for match in cluster)
     notice_end = max(match.end for match in cluster)
+    notice_only_end = notice_end
     retained_credit_start = None
+    reader_credit_start = None
+    reader_credit_end = None
+    reader_credit_prefix_end = None
+    title_text = re.sub(r"^\s*\d+\s*[-.:]\s*", "", chapter_title)
+    title_text = " ".join(_normalize_word(word) for word in title_text.split())
+    headings = (
+        _find_phrase_matches(words, (title_text,), threshold=88)
+        if len(title_text.split()) >= 2 else []
+    )
     credits = _find_phrase_matches(words, ("recording by", "reading by", "read by"), threshold=90)
     for credit in credits:
         if not notice_end - 0.05 <= credit.start <= notice_end + 2.0:
@@ -214,20 +229,33 @@ def detect_intro_boundary(
         if retain_reader_credit:
             retained_credit_start = credit.start
             break
+        reader_credit_start = credit.start
+        reader_credit_prefix_end = credit.end
         credit_end = credit.end
+        confirmed_end = False
+        heading_start = min(
+            (heading.start for heading in headings if credit.end <= heading.start <= credit.end + 6),
+            default=float("inf"),
+        )
         for word in words:
             if word.end <= credit_end:
                 continue
+            if word.start >= heading_start or _normalize_word(word.text) in {"chapter", "section", "part"}:
+                confirmed_end = credit_end > credit.end
+                break
             if (
                 word.start - credit_end > 1.0
                 or word.end > credit.end + 6
-                or _normalize_word(word.text) in {"chapter", "section", "part"}
             ):
                 break
             credit_end = word.end
             if word.text.rstrip().endswith((".", "!", "?")):
+                confirmed_end = True
                 break
-        notice_end = max(notice_end, credit_end)
+        if confirmed_end:
+            reader_credit_end = credit_end
+            notice_end = max(notice_end, credit_end)
+        break
     notice_start = min(match.start for match in cluster)
     preceding_words = [word for word in _tokenize(words) if word.end <= notice_start]
     has_chapter_announcement = any(
@@ -242,6 +270,8 @@ def detect_intro_boundary(
     keep_time = max(0.0, notice_end + safety_gap_seconds)
     if retained_credit_start is not None:
         keep_time = min(keep_time, (notice_end + retained_credit_start) / 2)
+    if reader_credit_start is not None and reader_credit_end is None:
+        keep_time = min(notice_end, reader_credit_start)
     return BoundarySuggestion(
         keep_time_seconds=keep_time,
         confidence=confidence,
@@ -249,6 +279,10 @@ def detect_intro_boundary(
         removal_refinement_limit_seconds=min(cluster, key=lambda match: match.start).end,
         removal_start_seconds=removal_start,
         notice_end_seconds=notice_end,
+        reader_credit_start_seconds=reader_credit_start,
+        reader_credit_end_seconds=reader_credit_end,
+        notice_only_end_seconds=notice_only_end,
+        reader_credit_prefix_end_seconds=reader_credit_prefix_end,
     )
 
 
@@ -532,11 +566,13 @@ def detect_boundaries(
     book_title: str = "",
     outro_transcripts: Sequence[Sequence[TimedWord]] = (),
     duration_seconds: float | None = None,
+    chapter_title: str = "",
 ) -> BoundaryDetection:
     intro = detect_intro_boundary(
         intro_words,
         safety_gap_seconds=intro_safety_gap_seconds,
         retain_reader_credit=is_first_chapter,
+        chapter_title=chapter_title,
     )
     if intro is not None:
         intro = remove_duplicate_first_announcement(

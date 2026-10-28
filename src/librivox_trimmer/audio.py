@@ -98,6 +98,14 @@ def _detect_silences(
     return silences
 
 
+def reader_credit_pause(source_path: Path, cue_end: float, window_end: float) -> tuple[float, float] | None:
+    pauses = _detect_silences(source_path, max(0.0, cue_end - 0.5), window_end, 0.75)
+    return next((
+        (start, end) for start, end in pauses or []
+        if start >= cue_end and end < window_end - 0.05 and end - start >= 0.75
+    ), None)
+
+
 def refine_outro_boundary_with_silence(
     source_path: Path,
     candidate_time: float,

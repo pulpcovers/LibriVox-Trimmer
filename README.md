@@ -117,6 +117,12 @@ On the first loaded track, unique spoken title or introduction text before the
 LibriVox notice is kept; an earlier announcement can be removed when it is
 repeated after the notice.
 
+On later tracks, attached reader credits are checked using a short independent
+transcription and a measured pause. If the credit ending cannot be confirmed,
+the credit and following speech are retained and marked **Review intro** rather
+than risking removal of the chapter title or narration. Check these previews and
+adjust the cut manually if needed. Pauses alone do not identify a reader credit.
+
 ### Preview and Export
 
 - **Preview intro cut** plays the proposed removed notice.

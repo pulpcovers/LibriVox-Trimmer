@@ -7,6 +7,7 @@ from dataclasses import replace
 from librivox_trimmer.audio import (
     extract_analysis_slice,
     pause_after_heading,
+    reader_credit_pause,
     refine_cut_into_pause,
     refine_intro_resume_start,
     refine_outro_boundary_with_silence,
@@ -242,6 +243,66 @@ def _transcribe_outro(
     return outro_words, retries, remaining
 
 
+def _confirm_reader_credit(track_path, detection, intro_words, duration, model, safety_gap, report):
+    intro = detection.intro
+    if intro is None or intro.reader_credit_start_seconds is None:
+        return detection
+    credit_start = intro.reader_credit_start_seconds
+    crop_start = max(0.0, credit_start - 0.5)
+    crop_end = min(duration, credit_start + 8.0)
+    report("Checking the reader-credit boundary separately...")
+    try:
+        with TemporaryDirectory(prefix="librivox-credit-") as temporary:
+            clip = extract_analysis_slice(
+                track_path, Path(temporary) / "reader_credit.wav", crop_start, crop_end,
+            )
+            focused_words = transcribe_words(clip, model=model, offset_seconds=crop_start)
+    except (OSError, RuntimeError, ValueError):
+        focused_words = []
+    notice_end = intro.notice_only_end_seconds or credit_start
+    candidate_words = (
+        [word for word in intro_words if word.end <= notice_end]
+        + [word for word in focused_words if word.end > notice_end]
+    )
+    candidate = detect_intro_boundary(candidate_words, safety_gap_seconds=safety_gap)
+    if (
+        candidate is not None
+        and candidate.reader_credit_start_seconds is not None
+        and abs(candidate.reader_credit_start_seconds - credit_start) <= 1.0
+        and candidate.reader_credit_end_seconds is not None
+    ):
+        credit_end = candidate.reader_credit_end_seconds
+        cue_end = candidate.reader_credit_prefix_end_seconds
+        first_pause = reader_credit_pause(track_path, cue_end, crop_end) if cue_end is not None else None
+        following = [word for word in focused_words if word.end > credit_end + 0.05]
+        pause = (
+            refine_intro_resume_start(track_path, credit_end, following[0].end + 0.1)
+            if following else None
+        )
+        if (
+            pause is not None and pause >= credit_end
+            and first_pause is not None
+            and credit_end <= first_pause[0] + 0.15
+            and first_pause[0] <= pause <= first_pause[1]
+        ):
+            return replace(detection, intro=replace(
+                intro, notice_end_seconds=credit_end, keep_time_seconds=pause,
+                reader_credit_end_seconds=credit_end,
+            ))
+    notice_end = intro.notice_only_end_seconds
+    if notice_end is None:
+        notice_end = min(intro.notice_end_seconds or credit_start, credit_start)
+    reason = (
+        "The reader-credit ending could not be confirmed independently with a pause; "
+        "the credit and following speech were kept to protect narration. Preview this cut."
+    )
+    report(reason)
+    return _with_review_reason(replace(detection, intro=replace(
+        intro, notice_end_seconds=notice_end, keep_time_seconds=min(notice_end, credit_start),
+        reader_credit_end_seconds=None,
+    )), "intro", reason)
+
+
 def _refine_intro(track_path, detection, intro_words, safety_gap, report, title):
     intro = detection.intro
     if intro is None:
@@ -250,10 +311,20 @@ def _refine_intro(track_path, detection, intro_words, safety_gap, report, title)
     if notice_end is None:
         notice_end = intro.keep_time_seconds - safety_gap
     following_words = [word for word in intro_words if word.end > notice_end + 0.05]
-    refined_resume = (
-        refine_intro_resume_start(track_path, notice_end, following_words[0].end + 0.1)
-        if following_words else None
-    )
+    if intro.reader_credit_start_seconds is not None:
+        if intro.reader_credit_end_seconds is None:
+            refined_resume = refine_intro_resume_start(
+                track_path, notice_end, intro.reader_credit_start_seconds,
+            )
+            if refined_resume is not None and refined_resume > intro.reader_credit_start_seconds:
+                refined_resume = None
+        else:
+            refined_resume = intro.keep_time_seconds
+    else:
+        refined_resume = (
+            refine_intro_resume_start(track_path, notice_end, following_words[0].end + 0.1)
+            if following_words else None
+        )
     if refined_resume is not None:
         intro = replace(intro, keep_time_seconds=refined_resume)
     else:
@@ -347,6 +418,11 @@ def analyze_track_boundaries(
         book_title=book_title,
         outro_transcripts=outro_retries,
         duration_seconds=duration,
+        chapter_title=title,
+    )
+    detection = _confirm_reader_credit(
+        track_path, detection, intro_words, duration, model,
+        settings.intro_safety_gap_seconds, report,
     )
     detection = _refine_intro(
         track_path, detection, intro_words, settings.intro_safety_gap_seconds, report, title,

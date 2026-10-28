@@ -20,6 +20,107 @@ def _timed(text, start, step=0.75):
             for index, word in enumerate(text.split())]
 
 
+@pytest.mark.parametrize("confirmed_pause", [11.75, None])
+@pytest.mark.parametrize("cue_start", [8.4, 9.0])
+def test_credit_retry_protects_narration_without_chapter_metadata(tmp_path, monkeypatch, confirmed_pause, cue_start):
+    notice = _timed("This LibriVox recording is in the public domain", 5, 0.4)
+    initial = notice + [
+        TimedWord("Recording", 8.72, 9.9), TimedWord("by", 9.9, 10.44),
+        TimedWord("Nigel", 10.44, 10.68), TimedWord("Fisher", 10.68, 11.06),
+    ] + _timed("Our reception in Kalnagar The Royal City never contained such splendor", 11.06, 0.4)
+    focused = [
+        TimedWord("Recording", cue_start, 9.9), TimedWord("by", 9.9, 10.44),
+        TimedWord("Nigel", 10.44, 10.68), TimedWord("Fisher.", 10.68, 11.06),
+    ] + _timed("Our reception in Kalnagar", 12.3, 0.4)
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", lambda *_args, **_kwargs: focused)
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: confirmed_pause)
+    monkeypatch.setattr(detection, "reader_credit_pause", lambda *_args: (11.25, 12.26))
+    original = detection.detect_boundaries(initial, [])
+
+    result = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", original, initial, 100, object(), 0.6, lambda _message: None,
+    )
+
+    if confirmed_pause is not None:
+        assert result.intro.keep_time_seconds == confirmed_pause
+        assert result.intro.notice_end_seconds == 11.06
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds <= 8.72
+        assert "protect narration" in result.intro_review_reason
+
+
+def test_credit_retry_without_supported_ending_keeps_credit_and_flags_review(tmp_path, monkeypatch):
+    words = _timed("This is a LibriVox recording.", 0, 0.3)
+    words += _timed("Recording by A Reader the story begins without a pause", 2.7, 0.3)
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", lambda *_args, **_kwargs: words[6:])
+    result = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", detection.detect_boundaries(words, []), words,
+        100, object(), 0.6, lambda _message: None,
+    )
+
+    assert result.intro.reader_credit_end_seconds is None
+    assert result.intro.keep_time_seconds < 2.7
+    assert "protect narration" in result.intro_review_reason
+
+
+@pytest.mark.parametrize("first_pause", [(4.8, 5.8), None])
+def test_credit_retry_cannot_skip_a_pause_to_remove_following_narration(tmp_path, monkeypatch, first_pause):
+    notice = _timed("This is a LibriVox recording.", 0, 0.3)
+    credit = _timed("Recording by A Reader", 2.7, 0.3)
+    story = _timed("The story begins.", 6, 0.3)
+    words = notice + credit + story
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", lambda *_args, **_kwargs: credit + story)
+    monkeypatch.setattr(detection, "reader_credit_pause", lambda *_args: first_pause)
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: 7.5)
+
+    result = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", detection.detect_boundaries(words, []), words,
+        100, object(), 0.6, lambda _message: None,
+    )
+
+    assert result.intro.keep_time_seconds < credit[0].start
+    assert result.intro.reader_credit_end_seconds is None
+    assert "protect narration" in result.intro_review_reason
+
+
+def test_failed_credit_retry_keeps_uncertain_credit_for_review(tmp_path, monkeypatch):
+    words = _timed("This is a LibriVox recording.", 0, 0.3)
+    words += _timed("Recording by A Reader.", 2.7, 0.3)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("Retry failed")
+
+    monkeypatch.setattr(detection, "extract_analysis_slice", fail)
+    result = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", detection.detect_boundaries(words, []), words,
+        100, object(), 0.6, lambda _message: None,
+    )
+
+    assert result.intro.keep_time_seconds < 2.7
+    assert "protect narration" in result.intro_review_reason
+
+
+def test_first_track_credit_is_not_retried_or_removed(tmp_path, monkeypatch):
+    words = _timed("This is a LibriVox recording.", 0, 0.3)
+    words += _timed("Recording by A Reader.", 2.7, 0.3)
+    original = detection.detect_boundaries(words, [], is_first_chapter=True)
+    monkeypatch.setattr(
+        detection, "extract_analysis_slice",
+        lambda *_args: pytest.fail("First-track credit must be retained without a retry"),
+    )
+
+    result = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", original, words,
+        100, object(), 0.6, lambda _message: None,
+    )
+
+    assert result is original
+
+
 def _coverage_case(tmp_path, monkeypatch, recovered_words, initial_words):
     monkeypatch.setattr(detection, "read_track", lambda _path: (600, "Chapter", "Author"))
     monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)

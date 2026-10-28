@@ -117,6 +117,18 @@ def test_notice_cut_uses_complete_pause_without_clipping_announcement(tmp_path, 
     assert audio.refine_cut_into_pause(tmp_path / "chapter.mp3", 3.34, 5.36) == pytest.approx(expected)
 
 
+@pytest.mark.parametrize("pauses,expected", [
+    ([(9.0, 9.85), (11.25, 12.26), (14.02, 15.08)], (11.25, 12.26)),
+    ([(11.1, 11.6)], None),
+    ([(11.25, 16.0)], None),
+    (None, None),
+])
+def test_reader_credit_uses_first_complete_substantial_pause(tmp_path, monkeypatch, pauses, expected):
+    monkeypatch.setattr(audio, "_detect_silences", lambda *_args: pauses)
+
+    assert audio.reader_credit_pause(tmp_path / "chapter.mp3", 10.44, 16.0) == expected
+
+
 @pytest.mark.parametrize("start,end", [(-1, 4), (4, 4), (5, 2)])
 def test_build_trim_command_rejects_invalid_interval(tmp_path, start, end):
     with pytest.raises(ValueError):
