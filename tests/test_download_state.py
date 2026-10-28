@@ -41,6 +41,21 @@ def test_cleanup_removes_orphaned_download_but_preserves_completed_project(tmp_p
     assert complete.exists()
 
 
+def test_an_analysis_cache_folder_of_json_files_keeps_an_older_download_folder_recognised(tmp_path):
+    assets = tmp_path / "book_files"
+    (assets / "chapters").mkdir(parents=True)
+    (assets / "chapters" / "01.mp3").write_bytes(b"mp3")
+    cache = assets / "analysis-cache"
+    cache.mkdir()
+    (cache / "abc-base.en.json").write_text("{}", encoding="utf-8")
+
+    assert is_managed_assets_dir(assets)
+
+    (cache / "notes.docx").write_bytes(b"someone's file")
+
+    assert not is_managed_assets_dir(assets)
+
+
 def test_cleanup_skips_a_download_locked_by_another_process(tmp_path):
     projects_directory = tmp_path / "Projects"
     assets_directory = projects_directory / "active-book_files"

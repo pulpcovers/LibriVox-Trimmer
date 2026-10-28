@@ -7,6 +7,7 @@ import portalocker
 
 
 MANAGED_MARKER = ".librivox-trimmer-managed"
+ANALYSIS_CACHE_FOLDER = "analysis-cache"
 
 
 def mark_managed_directory(directory: Path) -> None:
@@ -25,6 +26,10 @@ def is_managed_assets_dir(directory: Path) -> bool:
         if entry.is_dir() and entry.name == "chapters":
             if any(item.is_symlink() or (item.is_file() and item.suffix.lower() != ".mp3")
                    for item in entry.rglob("*")):
+                return False
+        elif entry.is_dir() and entry.name == ANALYSIS_CACHE_FOLDER:
+            if any(item.is_symlink() or item.is_dir() or item.suffix.lower() not in {".json", ".tmp"}
+                   for item in entry.iterdir()):
                 return False
         elif not (entry.is_file() and entry.suffix.lower() == ".zip"):
             return False

@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 
 from imageio_ffmpeg import get_ffmpeg_exe
 
+from librivox_trimmer.analysis_cache import active_cache
 from librivox_trimmer.metadata import read_track, restore_id3_tags
 
 
@@ -86,6 +87,11 @@ def _detect_silences(
     source_path: Path, start: float, end: float, minimum_seconds: float,
 ) -> list[tuple[float, float]] | None:
     """Return complete pauses between start and end in source time, or None if FFmpeg fails."""
+    cache = active_cache()
+    if cache is not None:
+        cached = cache.get_silences(start, end, minimum_seconds)
+        if cached is not None:
+            return cached
     command = [
         resolve_ffmpeg(), "-hide_banner", "-nostats", "-loglevel", "info",
         "-ss", f"{start:.3f}", "-i", str(source_path),
@@ -107,6 +113,8 @@ def _detect_silences(
         elif silence_start is not None:
             silences.append((silence_start, event_time))
             silence_start = None
+    if cache is not None:
+        cache.put_silences(start, end, minimum_seconds, silences)
     return silences
 
 

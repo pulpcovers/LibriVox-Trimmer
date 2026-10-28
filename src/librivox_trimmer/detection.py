@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace
 
+from librivox_trimmer.analysis_cache import active_cache, analysis_session
 from librivox_trimmer.audio import (
     extract_analysis_slice,
     pause_after_heading,
@@ -53,6 +54,44 @@ def _total(gaps):
     return sum(end - start for start, end in gaps)
 
 
+class _AnalysisAudio:
+    """Slices a track for analysis; transcripts and speech regions of a window come from the cache when known."""
+
+    def __init__(self, track_path, temporary_path, model):
+        self._track_path = track_path
+        self._temporary_path = temporary_path
+        self._model = model
+        self._slices = {}
+
+    def _slice(self, name, start, end):
+        key = (round(start, 3), round(end, 3))
+        if key not in self._slices:
+            self._slices[key] = extract_analysis_slice(
+                self._track_path, self._temporary_path / f"{name}.wav", start, end,
+            )
+        return self._slices[key]
+
+    def words(self, name, start, end):
+        cache = active_cache()
+        cached = cache.get_words(start, end) if cache is not None else None
+        if cached is not None:
+            return cached
+        words = transcribe_words(self._slice(name, start, end), model=self._model, offset_seconds=start)
+        if cache is not None:
+            cache.put_words(start, end, words)
+        return words
+
+    def regions(self, name, start, end):
+        cache = active_cache()
+        cached = cache.get_regions(start, end) if cache is not None else None
+        if cached is not None:
+            return cached
+        regions = detect_speech_regions(self._slice(name, start, end), offset_seconds=start)
+        if cache is not None:
+            cache.put_regions(start, end, regions)
+        return regions
+
+
 def _merge_gaps(gaps, *, join_seconds=2.0, max_seconds=15.0):
     merged = []
     for start, end in gaps:
@@ -67,6 +106,7 @@ def _recover_uncovered_speech(
     track_path, temporary_path, words, window, *, model, find_gaps, relevant_gaps, name,
 ):
     window_start, window_end = window
+    audio = _AnalysisAudio(track_path, temporary_path, model)
     attempted = set()
     for attempt in range(2):
         gaps = relevant_gaps(words)
@@ -82,12 +122,9 @@ def _recover_uncovered_speech(
             if key in attempted or crop_end <= crop_start:
                 continue
             attempted.add(key)
-            audio = extract_analysis_slice(
-                track_path, temporary_path / f"{name}_{attempt}_{index}.wav", crop_start, crop_end,
-            )
             inside = lambda word: start - 0.3 <= (word.start + word.end) / 2 <= end + 0.3
             recovered = [
-                word for word in transcribe_words(audio, model=model, offset_seconds=crop_start)
+                word for word in audio.words(f"{name}_{attempt}_{index}", crop_start, crop_end)
                 if inside(word)
             ]
             if not recovered:
@@ -111,25 +148,21 @@ def _transcribe_intro(
     track_path, temporary_path, intro_end, *, model, safety_gap, is_first_chapter, report, title,
 ):
     """Transcribe the opening, retrying until the notice is found and complete; return (words, untranscribed gaps)."""
+    audio = _AnalysisAudio(track_path, temporary_path, model)
     analyzed_intro_end = min(20.0, intro_end)
-    intro_audio = extract_analysis_slice(track_path, temporary_path / "intro.wav", 0, analyzed_intro_end)
-    coverage_audio = intro_audio
-    intro_words = transcribe_words(intro_audio, model=model)
+    coverage_window = ("intro", 0, analyzed_intro_end)
+    intro_words = audio.words("intro", 0, analyzed_intro_end)
     original_intro_words = intro_words
     if analyzed_intro_end > 10 and detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap) is None:
         report(f"Checking first 10 seconds: {title}...")
-        retry_audio = extract_analysis_slice(track_path, temporary_path / "intro_retry_10.wav", 0, 10.0)
-        intro_words = transcribe_words(retry_audio, model=model) + [
+        intro_words = audio.words("intro_retry_10", 0, 10.0) + [
             word for word in original_intro_words if word.start >= 10.0
         ]
     if intro_end > 10 and detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap) is None:
         focus_start = 5.0
         focus_end = min(18.0, intro_end)
         report(f"Checking opening notice separately: {title}...")
-        focused_audio = extract_analysis_slice(
-            track_path, temporary_path / "intro_notice.wav", focus_start, focus_end,
-        )
-        focused_words = transcribe_words(focused_audio, model=model, offset_seconds=focus_start)
+        focused_words = audio.words("intro_notice", focus_start, focus_end)
         notice = detect_intro_boundary(focused_words, safety_gap_seconds=safety_gap)
         if notice is not None:
             intro_words = (
@@ -171,10 +204,8 @@ def _transcribe_intro(
         ):
             break
         report(f"Checking first {int(extended_end)} seconds: {title}...")
-        extended_audio = extract_analysis_slice(
-            track_path, temporary_path / f"intro_retry_{int(extended_end)}.wav", 0, extended_end,
-        )
-        extended_words = transcribe_words(extended_audio, model=model)
+        window_name = f"intro_retry_{int(extended_end)}"
+        extended_words = audio.words(window_name, 0, extended_end)
         if notice is None:
             intro_words = extended_words
         else:
@@ -184,9 +215,9 @@ def _transcribe_intro(
                 + [word for word in extended_words if word.end > merge_end]
             )
         analyzed_intro_end = extended_end
-        coverage_audio = extended_audio
+        coverage_window = (window_name, 0, extended_end)
 
-    regions = detect_speech_regions(coverage_audio)
+    regions = audio.regions(*coverage_window)
     gaps = []
     if _relevant_gaps(intro_words, regions, safety_gap):
         report(f"Re-checking untranscribed speech: {title}...")
@@ -204,10 +235,7 @@ def _transcribe_intro(
         focus_end = min(intro_end, notice.notice_end_seconds + 30.0)
         if focus_end - focus_start >= 3.0:
             report(f"Looking for the chapter heading: {title}...")
-            focused_audio = extract_analysis_slice(
-                track_path, temporary_path / "intro_heading.wav", focus_start, focus_end,
-            )
-            focused_words = transcribe_words(focused_audio, model=model, offset_seconds=focus_start)
+            focused_words = audio.words("intro_heading", focus_start, focus_end)
             intro_words = (
                 [word for word in intro_words if word.end <= focus_start]
                 + [word for word in focused_words if word.start >= focus_start]
@@ -224,8 +252,8 @@ def _transcribe_outro(
     Returns (words, last-chapter retry transcripts, untranscribed gaps).
     """
     report(f"Analyzing chapter: {title} (outro)...")
-    outro_audio = extract_analysis_slice(track_path, temporary_path / "outro.wav", outro_start, duration)
-    outro_words = transcribe_words(outro_audio, model=model, offset_seconds=outro_start)
+    audio = _AnalysisAudio(track_path, temporary_path, model)
+    outro_words = audio.words("outro", outro_start, duration)
     retries = []
 
     def find_marker(words):
@@ -243,16 +271,13 @@ def _transcribe_outro(
         if tail_start <= outro_start:
             continue
         report(f"Checking final {int(tail_seconds)} seconds: {title}...")
-        tail_audio = extract_analysis_slice(
-            track_path, temporary_path / f"outro_tail_{int(tail_seconds)}.wav", tail_start, duration,
-        )
-        tail_words = transcribe_words(tail_audio, model=model, offset_seconds=tail_start)
+        tail_words = audio.words(f"outro_tail_{int(tail_seconds)}", tail_start, duration)
         if is_last_chapter:
             retries.append(tail_words)
         else:
             outro_words = [word for word in outro_words if word.end <= tail_start] + tail_words
 
-    outro_regions = detect_speech_regions(outro_audio, offset_seconds=outro_start)
+    outro_regions = audio.regions("outro", outro_start, duration)
 
     def find_gaps(words):
         # Speech covered by any final-chapter retry transcript counts as transcribed.
@@ -286,10 +311,9 @@ def _confirm_reader_credit(
     report("Checking the reader-credit boundary separately...")
     try:
         with TemporaryDirectory(prefix="librivox-credit-") as temporary:
-            clip = extract_analysis_slice(
-                track_path, Path(temporary) / "reader_credit.wav", crop_start, crop_end,
+            focused_words = _AnalysisAudio(track_path, Path(temporary), model).words(
+                "reader_credit", crop_start, crop_end,
             )
-            focused_words = transcribe_words(clip, model=model, offset_seconds=crop_start)
     except (OSError, RuntimeError, ValueError):
         focused_words = []
     notice_end = intro.notice_only_end_seconds or credit_start
@@ -418,7 +442,7 @@ def _refine_outro(track_path, detection, duration):
     return replace(detection, outro=outro)
 
 
-def analyze_track_boundaries(
+def _analyze_track(
     track_path: Path,
     *,
     model=None,
@@ -505,6 +529,24 @@ def analyze_track_boundaries(
 
 class AnalysisCancelled(Exception):
     pass
+
+
+def analyze_track_boundaries(
+    track_path: Path,
+    *,
+    model=None,
+    progress_callback: Callable[[str], None] | None = None,
+    settings: DetectionSettings | None = None,
+    is_first_chapter: bool = False,
+    is_last_chapter: bool = False,
+) -> BoundaryDetection:
+    settings = settings or DetectionSettings()
+    # Transcripts and silences are remembered per track, so re-running after a logic change skips Whisper.
+    with analysis_session(track_path, settings.model_size):
+        return _analyze_track(
+            track_path, model=model, progress_callback=progress_callback, settings=settings,
+            is_first_chapter=is_first_chapter, is_last_chapter=is_last_chapter,
+        )
 
 
 def analyze_tracks_boundaries(

@@ -23,5 +23,10 @@ def model_cache_dir() -> Path:
     return user_data_dir() / "models"
 
 
+def analysis_cache_dir() -> Path:
+    override = os.environ.get("LIBRIVOX_ANALYSIS_CACHE_DIR")
+    return Path(override) if override else user_data_dir() / "analysis-cache"
+
+
 def default_output_dir() -> Path:
     return Path.home() / "Music" / "LibriVox Trimmer"

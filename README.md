@@ -94,6 +94,11 @@ In the same terminal, run:
 Pytest prints a summary when the tests finish. A successful run reports all tests
 as passed; the number can change as the project evolves.
 
+The replay tests (`tests/test_replay.py`) re-run the detection logic on recorded
+transcripts and silences of real chapters in `tests/fixtures/analysis`, with no audio
+or speech model. After changing how the analysis asks for audio on purpose, record a
+chapter again with `scripts/record_analysis_fixture.py` (see its docstring).
+
 ## Using the App
 
 ### Load Chapters
@@ -170,6 +175,14 @@ use the intro search-window length as a maximum, not the initial slice length.
 Existing saved projects keep their configured maximum.
 Preferences are saved in `%LOCALAPPDATA%/LibriVoxTrimmer/settings.json` on Windows. Models
 remain cached in the app-data models folder and are downloaded on first use.
+
+The transcripts and silence measurements of each analysed chapter are remembered, so
+analysing the same chapter again is nearly instant. A project keeps them in an
+`analysis-cache` folder inside its own `_files` folder, so **Clean Up Project** removes
+them with the project. Chapters outside any project use
+`%LOCALAPPDATA%/LibriVoxTrimmer/analysis-cache` instead, where unused entries are removed
+after 90 days. Entries are keyed by the audio content and the speech model; delete the
+folder to force a fresh analysis.
 
 Detection preferences are also stored in each `.lvproj`. Opening a project
 restores its detection preferences; older projects use the current app defaults.
