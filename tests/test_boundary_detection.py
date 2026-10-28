@@ -308,6 +308,50 @@ def test_first_chapter_cut_covers_a_spoken_org_that_the_notice_match_missed():
     assert result.intro.removal_start_seconds == 0
 
 
+def test_later_chapter_removes_reader_credit_and_book_title_before_the_chapter_heading():
+    spoken = (
+        "This 3.2 3.8|is 3.8 4.2|a 4.2 4.3|LibraVox 4.3 4.9|recording. 4.9 5.1|All 6.1 6.2|"
+        "LibraVox 6.2 6.8|recordings 6.8 7.0|are 7.0 7.7|in 7.7 7.9|the 7.9 7.9|public 7.9 8.2|"
+        "domain. 8.2 8.5|For 9.7 9.8|further 9.8 10.1|information 10.1 10.6|and 10.6 11.8|to 11.8 11.9|"
+        "find 11.9 12.1|out 12.1 12.3|how 12.3 12.6|you 12.6 12.8|could 12.8 12.9|volunteer, 12.9 13.4|"
+        "please 14.4 14.7|go 14.7 15.0|to 15.0 15.4|LibraVox 15.4 16.2|.org. 16.2 17.2|recording 17.2 17.6|"
+        "Recording, 18.9 19.8|by, 19.9 20.4|and 20.7 21.0|Dementor. 21.0 21.5|The 22.2 23.3|"
+        "Prisoner 23.3 24.5|of 24.5 25.0|Zendre, 25.0 25.6|by 26.8 26.9|Anthony 26.9 27.3|Hope. 27.3 27.7|"
+        "Chapter 28.9 29.5|2 29.5 30.0|Concerning 30.0 31.1"
+    )
+    words = [
+        TimedWord(text, float(start), float(end), 0.95)
+        for text, start, end in (item.rsplit(" ", 2) for item in spoken.split("|"))
+    ]
+
+    result = detect_boundaries(words, [], chapter_title="Ch. 02 Concerning the Colour of Men's Hair")
+
+    assert result.intro is not None
+    assert result.intro.notice_end_seconds == pytest.approx(27.7)
+    assert 27.7 < result.intro.keep_time_seconds < 28.9
+    assert result.intro.heading_start_seconds == pytest.approx(28.9)
+    assert result.intro.reader_credit_start_seconds is None
+
+
+def test_chapter_mentioned_in_lower_case_narration_is_not_treated_as_a_heading():
+    notice = make_words("This is a LibraVox recording.")
+    narration = make_words("He had read in chapter three of that book", start=3)
+
+    result = detect_boundaries(notice + narration, [])
+
+    assert result.intro.keep_time_seconds < narration[0].start + 1
+
+
+def test_first_chapter_keeps_the_front_matter_before_its_heading():
+    notice = make_words("This is a LibraVox recording.")
+    front = make_words("The Prisoner of Zenda by Anthony Hope.", start=3)
+    heading = make_words("Chapter one", start=7)
+
+    result = detect_boundaries(notice + front + heading, [], is_first_chapter=True)
+
+    assert result.intro.keep_time_seconds < front[0].start
+
+
 def test_later_track_removes_attached_reader_credit():
     notice = make_words("This is a LibriVox recording.")
     credit = make_words("Reading by Mark Nelson.", start=2.7)

@@ -9,6 +9,7 @@ from librivox_trimmer.audio import (
     pause_after_heading,
     reader_credit_pause,
     refine_announcement_outro_cut,
+    refine_cut_before_heading,
     refine_cut_into_pause,
     refine_intro_resume_start,
     refine_outro_boundary_with_silence,
@@ -19,6 +20,7 @@ from librivox_trimmer.boundary_detection import (
     detect_outro_boundary,
     detect_final_chapter_outro,
     detect_intro_boundary,
+    front_matter_pending,
 )
 from mutagen.mp3 import MP3
 from librivox_trimmer.metadata import read_track
@@ -41,6 +43,9 @@ class TrackBoundaryResult:
 def _relevant_gaps(words, regions, safety_gap_seconds):
     notice = detect_intro_boundary(words, safety_gap_seconds=safety_gap_seconds)
     limit = notice.notice_end_seconds + 6 if notice is not None else COVERAGE_SEARCH_SECONDS
+    if notice is not None and front_matter_pending(words, notice.notice_end_seconds):
+        # Credit and title lines can run well past the notice before the chapter heading.
+        limit = notice.notice_end_seconds + 20
     return [gap for gap in uncovered_speech(words, regions) if gap[0] < limit]
 
 
@@ -151,11 +156,18 @@ def _transcribe_intro(
                 for word in intro_words
             )
         )
+        needs_heading = (
+            not is_first_chapter
+            and notice is not None
+            and analyzed_intro_end < 45.0
+            and front_matter_pending(intro_words, notice.notice_end_seconds)
+        )
         if (
             notice is not None
             and notice.keep_time_seconds < analyzed_intro_end - 3
             and not unfinished_speech
             and not needs_chapter_context
+            and not needs_heading
         ):
             break
         report(f"Checking first {int(extended_end)} seconds: {title}...")
@@ -175,15 +187,33 @@ def _transcribe_intro(
         coverage_audio = extended_audio
 
     regions = detect_speech_regions(coverage_audio)
-    if not _relevant_gaps(intro_words, regions, safety_gap):
-        return intro_words, []
-    report(f"Re-checking untranscribed speech: {title}...")
-    return _recover_uncovered_speech(
-        track_path, temporary_path, intro_words, (0.0, analyzed_intro_end),
-        model=model, name="coverage",
-        find_gaps=lambda words: uncovered_speech(words, regions),
-        relevant_gaps=lambda words: _relevant_gaps(words, regions, safety_gap),
-    )
+    gaps = []
+    if _relevant_gaps(intro_words, regions, safety_gap):
+        report(f"Re-checking untranscribed speech: {title}...")
+        intro_words, gaps = _recover_uncovered_speech(
+            track_path, temporary_path, intro_words, (0.0, analyzed_intro_end),
+            model=model, name="coverage",
+            find_gaps=lambda words: uncovered_speech(words, regions),
+            relevant_gaps=lambda words: _relevant_gaps(words, regions, safety_gap),
+        )
+
+    notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap)
+    if notice is not None and not is_first_chapter and front_matter_pending(intro_words, notice.notice_end_seconds):
+        # Whisper often drops the short chapter heading after the credit and title lines; a focused retry finds it.
+        focus_start = notice.notice_end_seconds + 5.0
+        focus_end = min(intro_end, notice.notice_end_seconds + 30.0)
+        if focus_end - focus_start >= 3.0:
+            report(f"Looking for the chapter heading: {title}...")
+            focused_audio = extract_analysis_slice(
+                track_path, temporary_path / "intro_heading.wav", focus_start, focus_end,
+            )
+            focused_words = transcribe_words(focused_audio, model=model, offset_seconds=focus_start)
+            intro_words = (
+                [word for word in intro_words if word.end <= focus_start]
+                + [word for word in focused_words if word.start >= focus_start]
+            )
+            gaps = _relevant_gaps(intro_words, regions, safety_gap) if gaps else gaps
+    return intro_words, gaps
 
 
 def _transcribe_outro(
@@ -332,7 +362,12 @@ def _refine_intro(track_path, detection, intro_words, safety_gap, report, title)
     if notice_end is None:
         notice_end = intro.keep_time_seconds - safety_gap
     following_words = [word for word in intro_words if word.end > notice_end + 0.05]
-    if intro.reader_credit_start_seconds is not None:
+    refined_resume = None
+    if intro.heading_start_seconds is not None:
+        refined_resume = refine_cut_before_heading(track_path, intro.heading_start_seconds)
+    if refined_resume is not None:
+        pass
+    elif intro.reader_credit_start_seconds is not None:
         if intro.reader_credit_end_seconds is None:
             refined_resume = refine_intro_resume_start(
                 track_path, notice_end, intro.reader_credit_start_seconds,

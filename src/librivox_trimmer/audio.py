@@ -150,6 +150,15 @@ def refine_outro_boundary_with_silence(
     return candidate_time
 
 
+def refine_cut_before_heading(source_path: Path, heading_start: float) -> float | None:
+    """Midpoint of the pause just before a spoken heading; Whisper's start time can run early or late."""
+    silences = _detect_silences(source_path, max(0.0, heading_start - 4.0), heading_start + 1.5, 0.35) or []
+    for start, end in reversed(silences):
+        if heading_start - 1.0 <= end <= heading_start + 1.0 and start < heading_start:
+            return (start + end) / 2
+    return None
+
+
 def refine_announcement_outro_cut(
     source_path: Path, marker_start: float, *, tail_seconds: float = 1.0,
 ) -> float | None:

@@ -63,6 +63,8 @@ class BoundarySuggestion:
     reader_credit_prefix_end_seconds: float | None = None
     # The outro was found by matching the chapter's opening announcement, so its first heard word may be late.
     announcement_outro: bool = False
+    # Start of the spoken chapter heading that follows removed credit/title lines.
+    heading_start_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,34 @@ def _find_phrase_matches(
     return matches
 
 
+def _front_matter(words: Sequence[TimedWord], notice_end: float) -> tuple[bool, float | None, float | None]:
+    """Whether a capitalised spoken heading ("Chapter 2") follows the notice, and where credit/title speech before it ends."""
+    after = [word for word in words if _normalize_word(word.text) and word.start >= notice_end - 0.05]
+    for index, word in enumerate(after[:-1]):
+        if index > 40 or word.start - notice_end > 14.0:
+            break
+        if _normalize_word(word.text) not in {"chapter", "section", "part"}:
+            continue
+        # Lower-case mentions inside narration ("in chapter three") are not headings.
+        if not word.text.strip()[:1].isupper() or _number_value(_normalize_word(after[index + 1].text)) is None:
+            continue
+        # "...by <name>" marks a credit or book/author line; a bare title belongs to the heading.
+        if index == 0 or not any(_normalize_word(item.text) == "by" for item in after[:index]):
+            return True, None, None
+        return True, after[index - 1].end, word.start
+    return False, None, None
+
+
+def front_matter_pending(words: Sequence[TimedWord], notice_end: float) -> bool:
+    """Credit or title speech ("... by <name>") follows the notice but no chapter heading has been heard yet."""
+    if _front_matter(words, notice_end)[0]:
+        return False
+    return any(
+        _normalize_word(word.text) == "by" and notice_end - 0.05 <= word.start <= notice_end + 14.0
+        for word in words
+    )
+
+
 def detect_intro_boundary(
     words: Sequence[TimedWord], *, safety_gap_seconds: float = 0.6,
     retain_reader_credit: bool = False,
@@ -266,6 +296,14 @@ def detect_intro_boundary(
             reader_credit_end = credit_end
             notice_end = max(notice_end, credit_end)
         break
+    heading_start = None
+    if not retain_reader_credit:
+        # Whatever the reader says between the notice and the chapter heading (credit, book title) is front matter.
+        _found, front_matter_end, front_matter_heading = _front_matter(words, notice_end)
+        if front_matter_end is not None and front_matter_end > notice_end:
+            notice_end = front_matter_end
+            heading_start = front_matter_heading
+            reader_credit_start = reader_credit_end = reader_credit_prefix_end = None
     notice_start = min(match.start for match in cluster)
     preceding_words = [word for word in _tokenize(words) if word.end <= notice_start]
     has_chapter_announcement = any(
@@ -293,6 +331,7 @@ def detect_intro_boundary(
         reader_credit_end_seconds=reader_credit_end,
         notice_only_end_seconds=notice_only_end,
         reader_credit_prefix_end_seconds=reader_credit_prefix_end,
+        heading_start_seconds=heading_start,
     )
 
 
