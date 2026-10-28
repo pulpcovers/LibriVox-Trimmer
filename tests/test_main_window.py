@@ -854,6 +854,23 @@ def test_preview_buttons_switch_waveform_to_first_cut_played(tmp_path, monkeypat
     application.processEvents()
 
 
+def test_clean_up_releases_the_media_player_before_deleting(tmp_path, monkeypatch):
+    application = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window._project_path = tmp_path / "book.lvproj"
+    window._tracks = [tmp_path / "chapter.mp3"]
+    monkeypatch.setattr(main_window.QMessageBox, "question", lambda *a, **k: main_window.QMessageBox.StandardButton.Yes)
+    window._player.setSource(QUrl.fromLocalFile(str(tmp_path / "chapter.mp3")))
+    seen = []
+    monkeypatch.setattr(main_window, "cleanup_project", lambda path: seen.append(window._player.source().isEmpty()))
+
+    window._clean_up_project()
+
+    assert seen == [True]
+    window.close()
+    application.processEvents()
+
+
 def test_focusing_a_time_field_selects_it_for_the_waveform(tmp_path, monkeypatch):
     application, window, _grid = _waveform_window(tmp_path, monkeypatch)
     window.show()

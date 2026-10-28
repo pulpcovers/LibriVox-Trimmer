@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QEvent, QThreadPool, QTimer, Qt, QUrl, Slot
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -620,6 +621,11 @@ class MainWindow(QMainWindow):
         )
         if response != QMessageBox.StandardButton.Yes:
             return
+        # The media player keeps the last previewed MP3 open, which blocks deletion on Windows.
+        self._stop_preview()
+        self._player.setSource(QUrl())
+        self._waveform_request += 1
+        QApplication.processEvents()
         try:
             cleanup_project(self._project_path)
         except Exception as error:
