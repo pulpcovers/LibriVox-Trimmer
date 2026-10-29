@@ -4,7 +4,7 @@ A Windows-first desktop app for reviewing and trimming LibriVox audiobook
 chapters. It analyses chapter openings and endings, suggests cut points, and
 exports approved MP3 intervals without re-encoding.
 
-Current version: 0.5.0
+Current version: 0.6.0 (beta)
 
 ## Highlights
 
@@ -19,8 +19,17 @@ Detection only suggests cuts. It never trims automatically, and exports do not
 modify source MP3s. Speech recognition can miss or misidentify words, so review
 and preview uncertain boundaries before exporting.
 
-This repository contains the Python source; packaged desktop installers are not
-currently published.
+## Windows Beta Download
+
+Download the Windows ZIP from [GitHub Releases](https://github.com/pulpcovers/LibriVox-Trimmer/releases/tag/v0.6.0),
+extract the entire ZIP, and run **LibriVox Trimmer.exe** inside the extracted folder.
+Keep the accompanying `_internal` folder beside the executable. Python and a separate
+FFmpeg installation are not required. The speech model downloads on first analysis.
+
+This beta is unsigned, so Windows may show an unknown-publisher or SmartScreen warning.
+Only proceed after checking that the download came from this repository's release.
+A SHA-256 checksum file is provided alongside the ZIP. In PowerShell, use
+`Get-FileHash .\LibriVox-Trimmer-0.6.0-windows.zip -Algorithm SHA256` to compare it.
 
 ## Install and Test on Windows
 
@@ -126,6 +135,9 @@ effect at the next analysis step, so it may take a few seconds.
 Chapters marked **Review intro** or **Review outro** need extra attention. Hover
 over a marked chapter to see the reason. These warnings are saved with the
 project. Re-running analysis updates warnings for the sections that were checked.
+Check **Mark reviewed** beside the selected chapter's Analyse button to acknowledge
+its warnings and clear its highlight. This autosaves without changing the cuts;
+unchecking it restores the warnings. New analysis results reset the acknowledgement.
 On the first loaded track, unique spoken title or introduction text before the
 LibriVox notice is kept; an earlier announcement can be removed when it is
 repeated after the notice.

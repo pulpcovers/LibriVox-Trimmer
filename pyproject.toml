@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "librivox-audiobook-trimmer"
-version = "0.5.0"
+version = "0.6.0"
 description = "Review and trim LibriVox audiobook chapter MP3 files"
 readme = "README.md"
 requires-python = ">=3.10"
