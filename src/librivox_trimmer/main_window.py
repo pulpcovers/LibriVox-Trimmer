@@ -979,7 +979,11 @@ class MainWindow(QMainWindow):
         )
         self._show_review(path, duration)
         self._set_track_controls_enabled(True)
-        self._refresh_waveform()
+        field = self._first_intro_cut_field()
+        if self._selected_cut_field()[0] is field:
+            self._refresh_waveform()
+        else:
+            self._show_waveform_for(field)
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.FocusIn:
@@ -1017,8 +1021,8 @@ class MainWindow(QMainWindow):
         field, _starts_kept = self._selected_cut_field()
         duration = self._keep_end.maximum()
         center = field.value()
-        if center <= 0 and field in (self._notice_start, self._ending_resume):
-            center = self._keep_start.value() if field is self._notice_start else self._keep_end.value()
+        if center <= 0 and field is self._ending_resume:
+            center = self._keep_end.value()
         start = max(0.0, min(center - 2.5, duration - 5.0))
         end = min(duration, start + 5.0)
         if end <= start:

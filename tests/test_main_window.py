@@ -694,6 +694,28 @@ def frame_grid(window, add_chapters):
     return grid
 
 
+@pytest.mark.parametrize("notice_start,expected_index", [(0, 1), (4, 0)])
+def test_selecting_chapter_targets_its_first_intro_boundary(window, frame_grid, notice_start, expected_index):
+    path = window._tracks[0]
+    window._review(path).intro_removal_start_seconds = notice_start
+    window._waveform_field.setCurrentIndex(2)
+
+    window._select_track(0)
+
+    assert window._waveform_field.currentIndex() == expected_index
+    boundary = frame_grid.nearest_boundary(5 if notice_start else 11)
+    window._waveform.cut_changed.emit(boundary)
+    review = window._review(path)
+    if notice_start:
+        assert review.intro_removal_start_seconds == window._notice_start.value()
+        assert review.intro_removal_start_seconds != notice_start
+        assert review.keep_start_seconds == 10
+    else:
+        assert review.keep_start_seconds == window._keep_start.value()
+        assert review.keep_start_seconds != 10
+        assert review.intro_removal_start_seconds == 0
+
+
 def test_waveform_click_writes_frame_snapped_value_to_selected_field(window, frame_grid):
     grid = frame_grid
     window._waveform_field.setCurrentIndex(1)
@@ -714,11 +736,33 @@ def test_waveform_click_writes_frame_snapped_value_to_selected_field(window, fra
 def test_waveform_refuses_cuts_out_of_order(window, frame_grid):
     grid = frame_grid
     window._waveform_field.setCurrentIndex(0)
+    review = window._review(window._tracks[0])
+    saved = (review.keep_range, review.intro_removal_start_seconds)
 
     window._apply_waveform_cut(grid.origin + 600 * grid.frame_seconds)
 
     assert window._notice_start.value() == 0
     assert "before Resume audio at" in window._status.text()
+    assert (review.keep_range, review.intro_removal_start_seconds) == saved
+
+
+def test_explicit_zero_intro_start_displays_the_start_of_the_file(window, frame_grid, monkeypatch):
+    path = window._tracks[0]
+    path.write_bytes(b"placeholder")
+    windows = []
+    read_waveform = main_window.read_waveform
+
+    def capture_waveform(source, start, end):
+        windows.append((start, end))
+        return read_waveform(source, start, end)
+
+    monkeypatch.setattr(main_window, "read_waveform", capture_waveform)
+    monkeypatch.setattr(window._thread_pool, "start", lambda worker: worker.run())
+
+    window._waveform_field.setCurrentIndex(0)
+
+    assert windows == [(0, 5)]
+    assert window._selected_cut_field()[0] is window._notice_start
 
 
 def test_preview_buttons_switch_waveform_to_first_cut_played(window, frame_grid, monkeypatch):
