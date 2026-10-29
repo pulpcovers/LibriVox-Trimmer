@@ -35,6 +35,7 @@ class TrackReview:
     outro_resume_start_seconds: float | None = None
     intro_review_reason: str | None = None
     outro_review_reason: str | None = None
+    manually_reviewed: bool = False
 
     @property
     def keep_range(self) -> tuple[float, float] | None:
@@ -183,6 +184,8 @@ def save_project(
             review["intro_review_reason"] = str(track_review.intro_review_reason)
         if track_review is not None and track_review.outro_review_reason:
             review["outro_review_reason"] = str(track_review.outro_review_reason)
+        if track_review is not None and track_review.manually_reviewed:
+            review["manually_reviewed"] = True
         serialized_tracks.append(
             {
                 "file": _path_reference(track_path, project_directory),
@@ -297,6 +300,7 @@ def load_project(project_path: Path, *, allow_network_paths: bool = False) -> Pr
                         str(review["outro_review_reason"])
                         if review.get("outro_review_reason") else None
                     ),
+                    manually_reviewed=review.get("manually_reviewed") is True,
                 ),
             )
         )

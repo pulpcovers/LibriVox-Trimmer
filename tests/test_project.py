@@ -20,6 +20,29 @@ def stub_track_metadata(path: Path) -> tuple[float, str, str]:
     return 120.0, path.stem, "Reader"
 
 
+@pytest.mark.parametrize("keep_range", [None, (2.5, 118.0)])
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_project_round_trip_preserves_review_acknowledgement_and_reasons(tmp_path, monkeypatch, keep_range, reviewed):
+    monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
+    track = tmp_path / "01.mp3"
+    track.write_bytes(b"mp3")
+    project_path = tmp_path / "Book.lvproj"
+    review = TrackReview(
+        intro_review_reason="Check the intro", outro_review_reason="Check the outro",
+        manually_reviewed=reviewed,
+    )
+    if keep_range is not None:
+        review.keep_start_seconds, review.keep_end_seconds = keep_range
+
+    save_project(project_path, [track], reviews={track.resolve(): review})
+    restored = load_project(project_path).tracks[0].review
+
+    assert restored.manually_reviewed is reviewed
+    assert restored.intro_review_reason == "Check the intro"
+    assert restored.outro_review_reason == "Check the outro"
+    assert restored.keep_range == keep_range
+
+
 def test_project_round_trip_stores_paths_metadata_and_review_ranges(tmp_path, monkeypatch):
     monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
     project_path = tmp_path / "Book.lvproj"

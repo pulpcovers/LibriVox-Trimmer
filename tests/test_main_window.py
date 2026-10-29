@@ -716,6 +716,73 @@ def test_selecting_chapter_targets_its_first_intro_boundary(window, frame_grid, 
         assert review.intro_removal_start_seconds == 0
 
 
+def test_editing_intro_at_rounded_eof_saves_exact_duration_and_preserves_cut(window, tmp_path, monkeypatch):
+    duration = 1946.567619047619
+    path = tmp_path / "chapter.mp3"
+    path.write_bytes(b"placeholder")
+    metadata = lambda _path: (duration, "Chapter", "Reader")
+    monkeypatch.setattr(main_window, "read_track", metadata)
+    monkeypatch.setattr(project_module, "read_track", metadata)
+    project_path = tmp_path / "Book.lvproj"
+    project_module.save_project(
+        project_path, [path], reviews={path.resolve(): project_module.TrackReview(17.5, duration)},
+    )
+    project = project_module.load_project(project_path)
+    window._set_project(project)
+    window._reviews = {track.path.resolve(): track.review for track in project.tracks}
+    window._add_tracks([path], persist=False)
+    monkeypatch.setattr(
+        main_window.QMessageBox, "critical", lambda *_args: pytest.fail("Saving a valid intro must not fail"),
+    )
+
+    assert window._keep_end.value() > duration
+    assert window._selected_cut_field()[0] is window._keep_start
+    window._waveform.cut_changed.emit(18.12)
+
+    saved = project_module.load_project(project_path).tracks[0].review
+    assert saved.keep_range == (18.12, duration)
+    assert saved.intro_removal_start_seconds == 0
+    window._select_track(0)
+    assert window._keep_start.value() == 18.12
+    assert window._review(path).keep_range == (18.12, duration)
+
+
+@pytest.mark.parametrize("reason", ["Check the intro", None])
+def test_mark_reviewed_hides_flags_reversibly_and_analysis_resets_it(window, add_chapters, monkeypatch, reason):
+    first, second = add_chapters("01.mp3", "02.mp3")
+    saves = []
+    monkeypatch.setattr(window, "_save_project_without_dialog", lambda: saves.append(True))
+    review = window._review(first)
+    review.intro_review_reason = "Check the intro"
+    review.outro_review_reason = "Check the outro"
+    window._refresh_track_item(first)
+
+    window._mark_reviewed.setChecked(True)
+
+    assert len(saves) == 1
+    assert review.manually_reviewed
+    assert review.intro_review_reason == "Check the intro"
+    assert "[Review" not in window._track_list.item(0).text()
+    assert window._track_list.item(0).background().style() == Qt.BrushStyle.NoBrush
+    window._track_list.setCurrentRow(1)
+    assert not window._mark_reviewed.isChecked()
+    window._track_list.setCurrentRow(0)
+    assert window._mark_reviewed.isChecked()
+    assert len(saves) == 1
+    window._mark_reviewed.setChecked(False)
+    assert len(saves) == 2
+    assert "[Review intro]" in window._track_list.item(0).text()
+    assert window._track_list.item(0).background().color().name() == "#fff7c2"
+    window._mark_reviewed.setChecked(True)
+
+    window._apply_detection(first, BoundaryDetection(None, None, intro_review_reason=reason))
+
+    assert not review.manually_reviewed
+    assert not window._mark_reviewed.isChecked()
+    assert ("[Review intro]" in window._track_list.item(0).text()) == bool(reason)
+    assert review.outro_review_reason is None
+
+
 def test_waveform_click_writes_frame_snapped_value_to_selected_field(window, frame_grid):
     grid = frame_grid
     window._waveform_field.setCurrentIndex(1)

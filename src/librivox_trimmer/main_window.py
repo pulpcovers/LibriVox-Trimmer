@@ -6,6 +6,7 @@ from dataclasses import replace
 from PySide6.QtCore import QEvent, QThreadPool, QTimer, Qt, QUrl, Slot
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QApplication,
     QComboBox,
     QFileDialog,
@@ -180,6 +181,9 @@ class MainWindow(QMainWindow):
         self._detect_button.clicked.connect(self._detect_selected)
         detection_row = QHBoxLayout()
         detection_row.addWidget(self._detect_button)
+        self._mark_reviewed = QCheckBox("Mark reviewed")
+        self._mark_reviewed.toggled.connect(self._set_chapter_reviewed)
+        detection_row.addWidget(self._mark_reviewed)
         detection_row.addStretch(1)
         editor.addLayout(detection_row)
         editor.addSpacing(4)
@@ -434,6 +438,7 @@ class MainWindow(QMainWindow):
             self._keep_start,
             self._keep_end,
             self._detect_button,
+            self._mark_reviewed,
             self._detect_all_button,
             self._export_all_button,
             self._preview_intro_button,
@@ -457,6 +462,7 @@ class MainWindow(QMainWindow):
         self._open_button.setEnabled(not busy)
         self._trim_button.setEnabled(bool(self._tracks) and not busy)
         self._detect_button.setEnabled(bool(self._tracks) and not busy)
+        self._mark_reviewed.setEnabled(self._selected_path() is not None and not busy)
         self._detect_all_button.setEnabled(bool(self._tracks) and not busy)
         self._export_all_button.setEnabled(bool(self._tracks) and not busy)
 
@@ -711,17 +717,21 @@ class MainWindow(QMainWindow):
 
     def _save_selected_cut_range(self, _value: float | None = None) -> None:
         path = self._selected_path()
-        if path is None or self._keep_end.value() <= self._keep_start.value():
+        if path is None:
+            return
+        duration, _, _ = read_track(path)
+        keep_end = min(self._keep_end.value(), duration)
+        if keep_end <= self._keep_start.value():
             return
         notice_start = self._notice_start.value()
         if notice_start > 0 and notice_start >= self._keep_start.value():
             return
         ending_resume = self._ending_resume.value()
-        if ending_resume > 0 and not self._keep_end.value() < ending_resume < self._keep_end.maximum():
+        if ending_resume > 0 and not keep_end < ending_resume < duration:
             return
         review = self._review(path)
         review.keep_start_seconds = self._keep_start.value()
-        review.keep_end_seconds = self._keep_end.value()
+        review.keep_end_seconds = keep_end
         review.intro_removal_start_seconds = notice_start
         review.outro_resume_start_seconds = ending_resume if ending_resume > 0 else None
         self._refresh_track_item(path)
@@ -896,15 +906,15 @@ class MainWindow(QMainWindow):
                 label += f" + opening 00:00-{self._format_time(review.intro_removal_start_seconds)}"
             if review.outro_resume_start_seconds is not None:
                 label += f" + ending {self._format_time(review.outro_resume_start_seconds)}"
-        if review.intro_review_reason:
+        if review.intro_review_reason and not review.manually_reviewed:
             label += " [Review intro]"
-        if review.outro_review_reason:
+        if review.outro_review_reason and not review.manually_reviewed:
             label += " [Review outro]"
         return label
 
     def _style_review_item(self, item: QListWidgetItem, path: Path) -> None:
         review = self._review(path)
-        if review.intro_review_reason or review.outro_review_reason:
+        if not review.manually_reviewed and (review.intro_review_reason or review.outro_review_reason):
             item.setBackground(QBrush(QColor("#fff7c2")))
             item.setForeground(QBrush(QColor("#202020")))
         else:
@@ -914,6 +924,8 @@ class MainWindow(QMainWindow):
     def _review_tooltip(self, path: Path) -> str:
         review = self._review(path)
         parts = []
+        if review.manually_reviewed:
+            parts.append("Manually reviewed")
         if review.intro_review_reason:
             parts.append("Intro: " + review.intro_review_reason)
         if review.outro_review_reason:
@@ -1103,9 +1115,20 @@ class MainWindow(QMainWindow):
             return "The retained ending must start after End narration at."
         return None
 
+    def _set_chapter_reviewed(self, reviewed: bool) -> None:
+        path = self._selected_path()
+        if path is None:
+            return
+        self._review(path).manually_reviewed = reviewed
+        self._refresh_track_item(path)
+        self._save_project_without_dialog()
+
     def _show_review(self, path: Path, duration: float) -> None:
         """Load a chapter's saved cut points into the controls without triggering a save."""
         review = self._review(path)
+        self._mark_reviewed.blockSignals(True)
+        self._mark_reviewed.setChecked(review.manually_reviewed)
+        self._mark_reviewed.blockSignals(False)
         keep_range = review.keep_range
         if keep_range is None or not keep_range[0] < keep_range[1] <= duration:
             keep_range = (0.0, duration)
@@ -1311,6 +1334,7 @@ class MainWindow(QMainWindow):
             keep_end = detection.outro.keep_time_seconds
         if keep_start >= keep_end:
             return False
+        review.manually_reviewed = False
         if detection.intro is not None or detection.outro is not None:
             review.keep_start_seconds, review.keep_end_seconds = keep_start, keep_end
         if detection.intro is not None:
