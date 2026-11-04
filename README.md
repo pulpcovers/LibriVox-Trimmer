@@ -103,11 +103,6 @@ In the same terminal, run:
 Pytest prints a summary when the tests finish. A successful run reports all tests
 as passed; the number can change as the project evolves.
 
-The replay tests (`tests/test_replay.py`) re-run the detection logic on recorded
-transcripts and silences of real chapters in `tests/fixtures/analysis`, with no audio
-or speech model. After changing how the analysis asks for audio on purpose, record a
-chapter again with `scripts/record_analysis_fixture.py` (see its docstring).
-
 ## Using the App
 
 ### Load Chapters
@@ -138,15 +133,11 @@ project. Re-running analysis updates warnings for the sections that were checked
 Check **Mark reviewed** beside the selected chapter's Analyse button to acknowledge
 its warnings and clear its highlight. This autosaves without changing the cuts;
 unchecking it restores the warnings. New analysis results reset the acknowledgement.
-On the first loaded track, unique spoken title or introduction text before the
-LibriVox notice is kept; an earlier announcement can be removed when it is
-repeated after the notice.
-
-On later tracks, attached reader credits are checked using a short independent
-transcription and a measured pause. If the credit ending cannot be confirmed,
-the credit and following speech are retained and marked **Review intro** rather
-than risking removal of the chapter title or narration. Check these previews and
-adjust the cut manually if needed. Pauses alone do not identify a reader credit.
+On the first loaded track, the book and chapter announcement is kept. On later
+tracks the notice, reader credit and repeated announcement are removed. When the
+app cannot confirm where a credit ends, it keeps the audio and marks the chapter
+**Review intro** rather than risk cutting the chapter title or narration. Check
+these previews and adjust the cut manually if needed.
 
 ### Preview and Export
 
@@ -172,29 +163,20 @@ line shows exactly where the exported file will cut. With the waveform focused,
 the arrow keys move the cut one frame; hold Shift to move ten frames.
 
 Exports use MP3 stream copy and restore ID3 tags. MP3 frame boundaries limit cut
-precision, so listen to uncertain transitions. Outro markers include explicit
-chapter, section, introduction, and prologue endings. Numbered endings such as
-**End of Part XX**, **End of Volume XX**, and **End of Book 2, Chapter 3** are
-also recognized near the end of a track; generic phrases such as "The End" are
-not used as cut markers.
+precision, so listen to uncertain transitions. The app recognizes spoken endings
+such as "End of Chapter 3" or "End of Part XX" near the end of a track; generic
+phrases such as "The End" are not used as cut markers.
 
 ## Settings
 
 Open **Settings > Preferences** to change project/output folders, download
 quality, the English speech model, intro/outro detection toggles, search-window
-lengths, the extra intro removal margin, and outro silence refinement. Preferences
-use the intro search-window length as a maximum, not the initial slice length.
-Existing saved projects keep their configured maximum.
+lengths, the extra intro removal margin, and outro silence refinement.
 Preferences are saved in `%LOCALAPPDATA%/LibriVoxTrimmer/settings.json` on Windows. Models
 remain cached in the app-data models folder and are downloaded on first use.
 
-The transcripts and silence measurements of each analysed chapter are remembered, so
-analysing the same chapter again is nearly instant. A project keeps them in an
-`analysis-cache` folder inside its own `_files` folder, so **Clean Up Project** removes
-them with the project. Chapters outside any project use
-`%LOCALAPPDATA%/LibriVoxTrimmer/analysis-cache` instead, where unused entries are removed
-after 90 days. Entries are keyed by the audio content and the speech model; delete the
-folder to force a fresh analysis.
+Results for each analysed chapter are remembered, so analysing it again is nearly
+instant. **Clean Up Project** removes a project's remembered results with the project.
 
 Detection preferences are also stored in each `.lvproj`. Opening a project
 restores its detection preferences; older projects use the current app defaults.
@@ -213,20 +195,14 @@ Project** removes the manifest and that managed download folder; MP3s opened fro
 elsewhere are not deleted. **Fetch chapters** creates a project automatically in
 the per-user app-data `Projects` folder (on Windows,
 `%LOCALAPPDATA%/LibriVoxTrimmer/Projects`) using the URL's project slug; it does
-not ask for a save location. To preserve downloads made before project files
-were added, open those MP3s and save them into a project once.
-
-While downloading, the ZIP is stored inside the project's `*_files` folder.
-If the app exits before its `.lvproj` manifest is written, that folder is an
-incomplete download. The next app launch removes incomplete project folders;
-completed projects are preserved, and folders locked by another active app
-instance are skipped.
+not ask for a save location. Incomplete downloads are removed the next time the
+app starts.
 
 ## Roadmap
 
 - More detailed progress and completion messages for extraction, analysis, and
   export.
-- A packaged desktop release.
+- Signed Windows releases.
 
 ## License
 
