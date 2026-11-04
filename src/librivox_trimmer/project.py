@@ -372,8 +372,8 @@ def cleanup_project(project_path: Path) -> None:
         if assets_dir.exists():
             if not is_managed_assets_dir(assets_dir):
                 raise ValueError(
-                    f"Refusing to delete {assets_dir}: it contains files that were not "
-                    "downloaded by this app. Remove the folder yourself if you want it gone."
+                    f"This folder could not be verified as safe for automatic deletion:\n{assets_dir}\n\n"
+                    "Nothing was deleted. Inspect its contents before removing it manually."
                 )
             shutil.rmtree(assets_dir)
     project.path.unlink()

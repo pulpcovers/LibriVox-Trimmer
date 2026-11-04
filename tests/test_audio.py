@@ -205,6 +205,31 @@ def test_refine_outro_boundary_moves_to_speech_after_aligned_pause(tmp_path, mon
     assert refined == pytest.approx(101.9)
 
 
+@pytest.mark.parametrize("candidate,pause", [
+    (785.9987755102042, (783.7322905102042, 785.6842635102041)),
+    (533.6967346938776, (532.1462586938776, 533.6359186938776)),
+])
+def test_refine_outro_boundary_moves_late_timestamp_back_inside_pause(tmp_path, monkeypatch, candidate, pause):
+    monkeypatch.setattr(audio, "read_track", lambda _path: (800, "Chapter", "Reader"))
+    monkeypatch.setattr(audio, "_detect_silences", lambda *_args: [pause])
+
+    refined = refine_outro_boundary_with_silence(tmp_path / "chapter.mp3", candidate)
+
+    assert pause[0] < refined < pause[1] - 0.1
+
+
+def test_refine_outro_boundary_prefers_preceding_pause_over_later_pause(tmp_path, monkeypatch):
+    monkeypatch.setattr(audio, "read_track", lambda _path: (818, "Chapter", "Reader"))
+    monkeypatch.setattr(audio, "_detect_silences", lambda *_args: [
+        (810.3926076303854, 810.9226306303855),
+        (810.9354646303855, 811.3816326303854),
+    ])
+
+    refined = refine_outro_boundary_with_silence(tmp_path / "chapter.mp3", 811.2332426303855)
+
+    assert refined == pytest.approx(810.7726306303855)
+
+
 def test_refine_outro_boundary_ignores_pause_not_aligned_to_candidate(tmp_path, monkeypatch):
     source = tmp_path / "chapter.mp3"
     source.touch()

@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QDoubleSpinBox,
     QProgressBar,
@@ -33,6 +32,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from librivox_trimmer.archive import extract_mp3s
 from librivox_trimmer.audio import trim_mp3
 from librivox_trimmer.config import projects_dir
+from librivox_trimmer.dialogs import QMessageBox
 from librivox_trimmer.detection import (
     TrackBoundaryResult,
     analyze_track_boundaries,
@@ -650,8 +650,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Some project files are missing",
-                "The project manifest was opened, but these MP3 files could not be found:\n"
-                f"{missing_names}\n\nUse Save Project only after restoring the missing files.",
+                "The project was opened, but these chapter files could not be found:\n"
+                f"{missing_names}\n\nRestore the files, then reopen the project before saving.",
             )
         else:
             self._status.setText(f"Project resumed: {project.path}")
@@ -666,8 +666,8 @@ class MainWindow(QMainWindow):
                 self,
                 "Project uses a network location",
                 f"This project refers to files on a network location:\n{error.path}\n\n"
-                "Opening it can send your Windows sign-in details to that server. "
-                "Only continue if you made or trust this project.",
+                "Opening it may send Windows authentication information to that server. "
+                "Continue only if you trust both this project and the server.\n\nContinue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -763,8 +763,9 @@ class MainWindow(QMainWindow):
         response = QMessageBox.question(
             self,
             "Clean up project",
-            "Delete this project file and the chapter files stored with it?\n\n"
-            "MP3 files that are still used from other folders will not be deleted.",
+            "Permanently delete this project and all chapter copies and cached analysis stored with it?\n\n"
+            "Original MP3s outside the project will not be deleted. "
+            "This cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -790,10 +791,11 @@ class MainWindow(QMainWindow):
         self._track_count.setText("No chapters loaded")
         self._track_info.setText("Select a chapter to review")
         self._set_track_controls_enabled(False)
-        self._status.setText("Project and its downloaded files were removed")
+        self._status.setText("Project, stored chapter copies and cached analysis were removed")
 
     def _start_worker(self, function, on_success, message: str, *, with_progress=False) -> None:
         self._set_busy(True)
+        self._worker_description = message
         self._status.setText(message)
         self._activity_progress.setRange(0, 0)
         self._activity_progress.show()
@@ -858,7 +860,18 @@ class MainWindow(QMainWindow):
 
     def _show_worker_error(self, message: str) -> None:
         self._status.setText("Task failed")
-        QMessageBox.critical(self, "Could not complete task", message)
+        callback = getattr(self._worker_success, "__name__", "")
+        advice = {
+            "_download_finished": "Check the project URL, internet connection and free disk space, then try again.",
+            "_detection_finished": "Check that the chapter can be played. If a speech model download failed, check your internet connection and retry.",
+            "_trim_finished": "Check that the output folder is writable and has free space. Existing output files are not overwritten; choose another folder if needed.",
+            "_export_all_finished": "Check that the output folder is writable and has free space, then retry the failed chapters.",
+        }.get(callback, "Check that the chapter files are available and the project folder is writable, then try again.")
+        task = getattr(self, "_worker_description", "Processing chapters")
+        QMessageBox.critical(
+            self, "Could not complete task", f"{task}\n\n{advice}\n\nOpen Details for the error message.",
+            details=message,
+        )
 
     def _add_tracks(self, paths: list[Path], *, persist: bool = True) -> None:
         added_paths: list[Path] = []
@@ -1020,7 +1033,7 @@ class MainWindow(QMainWindow):
         field, starts_kept = self._selected_cut_field()
         value = field.value()
         if value <= 0 and field in (self._notice_start, self._ending_resume):
-            return None, starts_kept
+            return (0.0 if field is self._notice_start else None), starts_kept
         grid = self._frame_grids.get(path.resolve())
         if grid is None:
             return value, starts_kept
@@ -1381,7 +1394,7 @@ class MainWindow(QMainWindow):
         outro = detection.outro
         messages: list[str] = []
         if intro is not None:
-            messages.append(f"intro {intro.keep_time_seconds:.1f}s ({intro.confidence:.0f}% match)")
+            messages.append(f"intro {intro.keep_time_seconds:.1f}s")
             if detection.intro_review_reason:
                 messages.append("Review intro: " + detection.intro_review_reason)
             if intro.removal_start_seconds > 0:
@@ -1389,7 +1402,7 @@ class MainWindow(QMainWindow):
         elif detection.intro_review_reason:
             messages.append("no intro notice matched. Review intro: " + detection.intro_review_reason)
         if outro is not None:
-            messages.append(f"outro {outro.keep_time_seconds:.1f}s ({outro.confidence:.0f}% match)")
+            messages.append(f"outro {outro.keep_time_seconds:.1f}s")
             if outro.resume_after_outro_seconds is not None:
                 messages.append(f"book ending retained from {outro.resume_after_outro_seconds:.2f}s")
             if detection.outro_review_reason:
@@ -1402,7 +1415,7 @@ class MainWindow(QMainWindow):
                 self,
                 "Overlapping suggestions",
                 "The detected intro and outro overlap. Existing boundaries were kept; "
-                "adjust them manually or analyze a different chapter.",
+                "preview this chapter and adjust its cut points manually.",
             )
             self._status.setText("Suggestions overlap; current boundaries unchanged")
             return
@@ -1533,14 +1546,14 @@ class MainWindow(QMainWindow):
         notice_start = self._notice_start.value()
         ending_resume = self._ending_resume.value() or None
         if keep_end <= keep_start:
-            QMessageBox.warning(self, "Invalid range", "Keep end must be after keep start.")
+            QMessageBox.warning(self, "Invalid range", "'End narration at' must be later than 'Resume audio at'.")
             return
 
         if notice_start > 0 and notice_start >= keep_start:
-            QMessageBox.warning(self, "Invalid notice range", "Notice start must be before resume time.")
+            QMessageBox.warning(self, "Invalid notice range", "'Remove intro notice from' must be earlier than 'Resume audio at'.")
             return
         if ending_resume is not None and not keep_end < ending_resume < self._keep_end.maximum():
-            QMessageBox.warning(self, "Invalid ending range", "Retained ending must follow the chapter outro cut.")
+            QMessageBox.warning(self, "Invalid ending range", "'Retain book ending from' must be after 'End narration at' and before the chapter ends.")
             return
 
         output_directory = QFileDialog.getExistingDirectory(
@@ -1598,17 +1611,17 @@ class MainWindow(QMainWindow):
                 ending_resume = review.outro_resume_start_seconds
             if keep_start < 0 or keep_end <= keep_start or keep_end > duration:
                 QMessageBox.warning(
-                    self, "Invalid cut range", f"Review the keep range for {source_path.name}.",
+                    self, "Invalid cut range", f"{source_path.name}: 'End narration at' must be later than 'Resume audio at' and no later than the chapter ends.",
                 )
                 return
             if notice_start < 0 or (notice_start > 0 and notice_start >= keep_start):
                 QMessageBox.warning(
-                    self, "Invalid intro range", f"Review the intro cut for {source_path.name}.",
+                    self, "Invalid intro range", f"{source_path.name}: 'Remove intro notice from' must be earlier than 'Resume audio at'.",
                 )
                 return
             if ending_resume is not None and not keep_end < ending_resume < duration:
                 QMessageBox.warning(
-                    self, "Invalid ending range", f"Review the retained ending for {source_path.name}.",
+                    self, "Invalid ending range", f"{source_path.name}: 'Retain book ending from' must be after 'End narration at' and before the chapter ends.",
                 )
                 return
             output_path = Path("unused") / f"{source_path.stem}_trimmed.mp3"
@@ -1660,7 +1673,13 @@ class MainWindow(QMainWindow):
         outputs, failures = result
         if failures:
             message = f"Exported {len(outputs)} chapter(s); {len(failures)} failed."
-            QMessageBox.warning(self, "Export completed with issues", message, QMessageBox.StandardButton.Ok)
+            if outputs:
+                message += f"\nSaved files: {outputs[0].parent}"
+            message += "\nOpen Details for every failed chapter and its error. Retry failed chapters individually."
+            QMessageBox.warning(
+                self, "Export completed with issues", message, QMessageBox.StandardButton.Ok,
+                details="\n\n".join(failures),
+            )
             self._status.setText(message + " First issue: " + failures[0])
             return
         message = f"Exported {len(outputs)} chapter(s) to {outputs[0].parent}."

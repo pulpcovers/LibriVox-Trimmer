@@ -138,7 +138,7 @@ def refine_outro_boundary_with_silence(
     minimum_silence_seconds: float = 0.35,
     maximum_lookahead_seconds: float = 4.0,
 ) -> float:
-    """Move an outro cut to speech onset only when a pause aligns with its match."""
+    """Prefer a cut inside an aligned preceding pause, then try a following pause."""
     if candidate_time < 0:
         return candidate_time
 
@@ -148,7 +148,14 @@ def refine_outro_boundary_with_silence(
     if window_end <= window_start:
         return candidate_time
 
-    for silence_start, silence_end in _detect_silences(source_path, window_start, window_end, 0.25) or []:
+    silences = _detect_silences(source_path, window_start, window_end, 0.25) or []
+    for silence_start, silence_end in silences:
+        if (
+            0 <= candidate_time - silence_end <= alignment_tolerance_seconds
+            and silence_end - silence_start >= minimum_silence_seconds
+        ):
+            return silence_end - 0.15
+    for silence_start, silence_end in silences:
         if (
             abs(silence_start - candidate_time) <= alignment_tolerance_seconds
             and silence_end - silence_start >= minimum_silence_seconds
@@ -292,16 +299,16 @@ def trim_mp3(
 
     source_duration, _, _ = read_track(source_path)
     if keep_end > source_duration:
-        raise ValueError("The kept interval extends beyond the track duration.")
+        raise ValueError("'End narration at' must not be later than the end of the chapter.")
     if not math.isfinite(intro_removal_start) or intro_removal_start < 0 or (
         intro_removal_start > 0 and intro_removal_start >= keep_start
     ):
-        raise ValueError("The notice start must be before its end.")
+        raise ValueError("'Remove intro notice from' must be earlier than 'Resume audio at'.")
     if outro_resume_start is not None and (
         not math.isfinite(outro_resume_start)
         or not keep_end < outro_resume_start < source_duration
     ):
-        raise ValueError("The retained ending must start after the outro cut and before EOF.")
+        raise ValueError("'Retain book ending from' must be after 'End narration at' and before the chapter ends.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg = resolve_ffmpeg()

@@ -214,7 +214,7 @@ def test_untranscribed_speech_is_retranscribed_and_replaces_misplaced_words(tmp_
     assert crops == [("coverage_0_0.wav", 4.5)]
     assert result.intro is not None
     assert result.intro.keep_time_seconds > notice[-1].end
-    assert "could not be transcribed" not in (result.intro_review_reason or "")
+    assert "was not accounted for by the transcript" not in (result.intro_review_reason or "")
     assert misplaced[0] not in analyzed
 
 
@@ -223,7 +223,7 @@ def test_unrecoverable_speech_flags_review_even_without_a_notice(tmp_path, monke
     result, crops, _analyzed = _coverage_case(tmp_path, monkeypatch, [], header)
     assert crops == [("coverage_0_0.wav", 4.5)]
     assert result.intro is None
-    assert "5.0-15.0s could not be transcribed" in result.intro_review_reason
+    assert "Possible speech at 5.0-15.0s was not accounted for by the transcript" in result.intro_review_reason
 
 
 def _outro_coverage_case(tmp_path, monkeypatch, recovered_words, initial_words):
@@ -263,7 +263,7 @@ def test_unrecoverable_closing_speech_flags_outro_review(tmp_path, monkeypatch):
     narration = _timed("and so the long night ended at last for everyone in the quiet house that winter", 572.0, 1.0)
     result, _crops = _outro_coverage_case(tmp_path, monkeypatch, [], narration)
     assert result.outro is None
-    assert "591.0-594.0s could not be transcribed" in result.outro_review_reason
+    assert "Possible speech at 591.0-594.0s was not accounted for by the transcript" in result.outro_review_reason
 
 
 def test_numbered_volume_marker_is_detected_near_track_end(tmp_path, monkeypatch):
@@ -285,7 +285,8 @@ def test_numbered_volume_marker_is_detected_near_track_end(tmp_path, monkeypatch
     assert result.outro.matched_text == "end of volume xx"
 
 
-def test_analysis_windows_are_transcribed_and_outro_times_are_offset(tmp_path, monkeypatch):
+@pytest.mark.parametrize("refinement_offset", [0.0, -0.45])
+def test_analysis_windows_are_transcribed_and_outro_times_are_offset(tmp_path, monkeypatch, refinement_offset):
     track_path = tmp_path / "chapter.mp3"
     track_path.touch()
     calls: list[tuple[Path, float, float]] = []
@@ -312,10 +313,16 @@ def test_analysis_windows_are_transcribed_and_outro_times_are_offset(tmp_path, m
 
     monkeypatch.setattr(detection, "extract_analysis_slice", extract)
     monkeypatch.setattr(detection, "transcribe_words", transcribe)
+    refined_cuts = []
+
+    def refine_outro(_path, candidate):
+        refined_cuts.append(candidate + refinement_offset)
+        return refined_cuts[-1]
+
     monkeypatch.setattr(
         detection,
         "refine_outro_boundary_with_silence",
-        lambda _path, candidate: candidate,
+        refine_outro,
     )
 
     result = detection.analyze_track_boundaries(track_path, model=object())
@@ -327,6 +334,7 @@ def test_analysis_windows_are_transcribed_and_outro_times_are_offset(tmp_path, m
     assert result.intro is not None
     assert result.outro is not None
     assert 569 < result.outro.keep_time_seconds < 571
+    assert result.outro.keep_time_seconds == pytest.approx(refined_cuts[-1])
 
 
 @pytest.mark.parametrize("refined,expected,needs_review", [(7.1, 7.1, False), (None, 6.45, True)])
@@ -592,6 +600,12 @@ def test_heading_keeps_only_number_when_a_clear_pause_follows_it(tmp_path, monke
     )
     assert calls == [(1.5, 4.4)]
     assert result.intro.removal_start_seconds == expected
+    assert result.intro.keep_time_seconds == suggestion.keep_time_seconds
+    assert "Could not confirm a suitable pause after the notice" in result.intro_review_reason
+    assert ("The rest of the opening announcement was kept" in result.intro_review_reason) == (pause is None)
+    assert "book title" not in result.intro_review_reason
+    assert "author" not in result.intro_review_reason
+    assert ("\n" in result.intro_review_reason) == (pause is None)
 
 
 def test_selected_last_chapter_combines_complementary_tail_transcripts(tmp_path, monkeypatch):

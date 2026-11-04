@@ -140,7 +140,7 @@ def _recover_uncovered_speech(
 
 def _with_review_reason(detection, section, reason):
     field = f"{section}_review_reason"
-    combined = " ".join(filter(None, (getattr(detection, field), reason)))
+    combined = "\n".join(filter(None, (getattr(detection, field), reason)))
     return replace(detection, **{field: combined})
 
 
@@ -368,8 +368,9 @@ def _confirm_reader_credit(
     if notice_end is None:
         notice_end = min(intro.notice_end_seconds or credit_start, credit_start)
     reason = (
-        "The reader-credit ending could not be confirmed independently with a pause; "
-        "the credit and following speech were kept to protect narration. Preview this cut."
+        "Could not safely locate the end of a possible reader credit. "
+        "The suggested intro cut stops before it to protect narration. "
+        "Preview the intro before exporting."
     )
     report(reason)
     return _with_review_reason(replace(detection, intro=replace(
@@ -408,13 +409,24 @@ def _refine_intro(track_path, detection, intro_words, safety_gap, report, title)
     if refined_resume is not None:
         intro = replace(intro, keep_time_seconds=refined_resume)
     else:
-        reason = "No clear pause after the intro notice or reader credit; preview this cut."
+        reason = (
+            "Could not confirm a suitable pause after the notice or possible reader credit. "
+            "The suggested cut may touch speech. Preview and adjust it before exporting."
+        )
         detection = _with_review_reason(detection, "intro", reason)
         report(f"Review intro cut: {title}. {reason}")
     if intro.heading_cut_seconds is not None:
         heading_cut = pause_after_heading(track_path, intro.heading_cut_seconds, intro.removal_start_seconds)
         if heading_cut is not None:
             intro = replace(intro, removal_start_seconds=heading_cut, removal_refinement_limit_seconds=None)
+        else:
+            reason = (
+                "Could not confirm a suitable pause after the chapter or section number. "
+                "The rest of the opening announcement was kept to avoid cutting speech. "
+                "Preview the intro before exporting."
+            )
+            detection = _with_review_reason(detection, "intro", reason)
+            report(f"Review intro cut: {title}. {reason}")
     if intro.removal_start_seconds > 0 and intro.removal_refinement_limit_seconds is not None:
         intro = replace(intro, removal_start_seconds=refine_cut_into_pause(
             track_path, intro.removal_start_seconds, intro.removal_refinement_limit_seconds,
@@ -433,7 +445,7 @@ def _refine_outro(track_path, detection, duration):
             outro = replace(outro, keep_time_seconds=refined_time)
     else:
         refined_time = refine_outro_boundary_with_silence(track_path, outro.keep_time_seconds)
-        if refined_time > outro.keep_time_seconds and (resume is None or refined_time < resume):
+        if refined_time != outro.keep_time_seconds and (resume is None or refined_time < resume):
             outro = replace(outro, keep_time_seconds=refined_time)
     if resume is not None and outro.retained_ending_match_end_seconds is not None:
         refined_resume = refine_cut_into_pause(track_path, resume, outro.retained_ending_match_end_seconds)
@@ -512,13 +524,13 @@ def _analyze_track(
     detection = _refine_intro(
         track_path, detection, intro_words, settings.intro_safety_gap_seconds, report, title,
     )
-    for section, gaps, missed in (("intro", intro_gaps, "a notice"), ("outro", outro_gaps, "a closing marker")):
+    for section, gaps in (("intro", intro_gaps), ("outro", outro_gaps)):
         if not gaps:
             continue
         spans = ", ".join(f"{start:.1f}-{end:.1f}s" for start, end in gaps)
         reason = (
-            f"Speech at {spans} could not be transcribed, so the {section} cut may be "
-            f"incomplete or {missed} may have been missed. Preview this chapter."
+            f"Possible speech at {spans} was not accounted for by the transcript. "
+            f"The {section} cut may be incomplete or missing. Listen to that section before exporting."
         )
         detection = _with_review_reason(detection, section, reason)
         report(f"Review {section}: {title}. {reason}")

@@ -69,6 +69,28 @@ def test_status_text_is_selectable_for_copying_paths(window):
     assert flags & Qt.TextInteractionFlag.TextSelectableByKeyboard
 
 
+@pytest.mark.parametrize("method", ["warning", "critical", "information", "question"])
+def test_message_boxes_show_literal_text_and_preserve_default_button(qapp, monkeypatch, method):
+    message = "Could not open <b>chapter</b>.mp3 & notes"
+    captured = {}
+
+    def capture(dialog):
+        captured.update(text=dialog.text(), format=dialog.textFormat(),
+                        default=dialog.standardButton(dialog.defaultButton()))
+        return int(main_window.QMessageBox.StandardButton.No)
+
+    monkeypatch.setattr(main_window.QMessageBox, "exec", capture)
+    result = getattr(main_window.QMessageBox, method)(
+        None, "Check chapter", message,
+        main_window.QMessageBox.StandardButton.Yes | main_window.QMessageBox.StandardButton.No,
+        main_window.QMessageBox.StandardButton.No,
+    )
+
+    assert captured == {"text": message, "format": Qt.TextFormat.PlainText,
+                        "default": main_window.QMessageBox.StandardButton.No}
+    assert result == main_window.QMessageBox.StandardButton.No
+
+
 def test_help_menu_follows_settings_and_opens_workflow_guide(window, monkeypatch):
     menus = window.menuBar().actions()
     captured = {}
@@ -87,6 +109,65 @@ def test_help_menu_follows_settings_and_opens_workflow_guide(window, monkeypatch
     assert "Fetch chapters" in captured["text"]
     assert "Analyse all chapters" in captured["text"]
     assert "Export trimmed chapter" in captured["text"]
+
+
+@pytest.mark.parametrize("has_outputs", [True, False])
+def test_export_failure_dialog_lists_all_failures_as_literal_details(window, tmp_path, monkeypatch, has_outputs):
+    failures = ["<b>chapter01</b>.mp3: output already exists", "chapter02.mp3: permission denied"]
+    outputs = [tmp_path / "chapter03_trimmed.mp3"] if has_outputs else []
+    captured = {}
+
+    def capture(dialog):
+        captured.update(text=dialog.text(), details=dialog.detailedText(), format=dialog.textFormat())
+        return int(main_window.QMessageBox.StandardButton.Ok)
+
+    monkeypatch.setattr(main_window.QMessageBox, "exec", capture)
+
+    window._export_all_finished((outputs, failures))
+
+    assert f"Exported {len(outputs)} chapter(s); 2 failed." in captured["text"]
+    assert (str(tmp_path) in captured["text"]) == has_outputs
+    assert captured["details"] == "\n\n".join(failures)
+    assert captured["format"] == Qt.TextFormat.PlainText
+    assert "Retry failed chapters individually" in captured["text"]
+
+
+def test_task_failure_separates_recovery_advice_from_technical_details(window, monkeypatch):
+    window._worker_success = window._trim_finished
+    window._worker_description = "Trimming chapter01.mp3..."
+    captured = {}
+
+    def capture(dialog):
+        captured.update(text=dialog.text(), details=dialog.detailedText())
+        return int(main_window.QMessageBox.StandardButton.Ok)
+
+    monkeypatch.setattr(main_window.QMessageBox, "exec", capture)
+
+    window._show_worker_error("<b>FFmpeg</b>: permission denied")
+
+    assert "Trimming chapter01.mp3" in captured["text"]
+    assert "output folder is writable" in captured["text"]
+    assert captured["details"] == "<b>FFmpeg</b>: permission denied"
+    assert "<b>" not in captured["text"]
+
+
+def test_cleanup_confirmation_explains_permanent_deletion_and_defaults_to_cancel(window, tmp_path, monkeypatch):
+    window._project_path = tmp_path / "book.lvproj"
+    captured = {}
+
+    def capture(dialog):
+        captured.update(text=dialog.text(), default=dialog.standardButton(dialog.defaultButton()))
+        return int(main_window.QMessageBox.StandardButton.Cancel)
+
+    monkeypatch.setattr(main_window.QMessageBox, "exec", capture)
+
+    window._clean_up_project()
+
+    assert "all chapter copies and cached analysis" in captured["text"]
+    assert "Original MP3s outside the project will not be deleted" in captured["text"]
+    assert "cannot be undone" in captured["text"]
+    assert captured["default"] == main_window.QMessageBox.StandardButton.Cancel
+    assert window._project_path == tmp_path / "book.lvproj"
 
 
 def test_download_progress_displays_percentage_and_byte_fallback(window):
@@ -830,6 +911,11 @@ def test_explicit_zero_intro_start_displays_the_start_of_the_file(window, frame_
 
     assert windows == [(0, 5)]
     assert window._selected_cut_field()[0] is window._notice_start
+    assert window._waveform.cut == 0
+    image = window._waveform.grab().toImage()
+    plot = window._waveform.plot_rect()
+    color = image.pixelColor(int(plot.center().x()), int(plot.top() + 10))
+    assert color.red() > color.green()
 
 
 def test_preview_buttons_switch_waveform_to_first_cut_played(window, frame_grid, monkeypatch):

@@ -1,9 +1,10 @@
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox,
+    QFileDialog, QFormLayout, QHBoxLayout, QLineEdit,
     QPushButton, QStyle, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from librivox_trimmer.dialogs import QMessageBox
 from librivox_trimmer.settings import AppSettings, DetectionSettings, MODEL_CHOICES
 
 
@@ -52,10 +53,10 @@ class SettingsDialog(QDialog):
         self._intro_margin = self._seconds(0, 3, 2)
         self._refinement = QCheckBox("Refine outro start using nearby silence")
         self._refinement.setToolTip(
-            "If a pause starts near the detected outro, move the cut to where "
-            "speech resumes. This keeps the pause and helps avoid cutting the "
-            "last word of the chapter. If no suitable pause is found, leave "
-            "the cut unchanged."
+            "Prefer a cut inside a nearby pause before the spoken outro. "
+            "If no suitable preceding pause is found, check for a pause starting near "
+            "the detected cut and move to its end. If neither is found, leave the cut unchanged. "
+            "Preview the result: silence alone does not guarantee a safe cut."
         )
         advanced_form.addRow("Intro search window", self._intro_window)
         advanced_form.addRow("Outro search window", self._outro_window)

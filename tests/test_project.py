@@ -167,7 +167,7 @@ def test_cleanup_refuses_to_delete_a_folder_with_foreign_files(tmp_path, monkeyp
     (assets_dir / "notes.docx").write_bytes(b"someone's file")
     save_project(project_path, [track], managed_audio_dir=assets_dir)
 
-    with pytest.raises(ValueError, match="not downloaded by this app"):
+    with pytest.raises(ValueError, match="could not be verified as safe for automatic deletion"):
         cleanup_project(project_path)
 
     assert (assets_dir / "notes.docx").exists()

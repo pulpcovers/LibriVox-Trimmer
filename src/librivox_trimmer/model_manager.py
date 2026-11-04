@@ -12,8 +12,9 @@ def load_whisper_model(model_size: str = DEFAULT_MODEL_SIZE):
         from faster_whisper import WhisperModel
     except ImportError as error:
         raise RuntimeError(
-            "Speech detection is not installed. From the project folder run "
-            "python -m pip install -e ."
+            "Speech recognition is unavailable. Reinstall the app and try again. "
+            "If you run from source, activate your Python environment and run "
+            "python -m pip install -e . from the source folder."
         ) from error
 
     cache_directory = model_cache_dir()
