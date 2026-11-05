@@ -20,6 +20,32 @@ def stub_track_metadata(path: Path) -> tuple[float, str, str]:
     return 120.0, path.stem, "Reader"
 
 
+def test_project_caches_catalog_metadata_across_saves(tmp_path, monkeypatch):
+    monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
+    project_path = tmp_path / "Book.lvproj"
+    metadata = {"schema_version": 1, "title": "Book", "chapters": [{"title": "Chapter"}], "narration": "unknown"}
+
+    saved = save_project(project_path, [], source_url="https://librivox.org/book/", book_metadata=metadata)
+    assert saved.book_metadata == metadata
+    saved = save_project(project_path, [], source_url="https://librivox.org/book/")
+    assert saved.book_metadata == metadata
+    assert load_project(project_path).book_metadata == metadata
+
+
+@pytest.mark.parametrize("metadata", [None, {}, [], {"schema_version": 99, "chapters": [{}]}])
+def test_missing_or_unrecognized_metadata_does_not_prevent_opening_old_project(tmp_path, metadata):
+    path = tmp_path / "Book.lvproj"
+    save_project(path, [])
+    payload = json.loads(path.read_text())
+    if metadata is None:
+        payload.pop("book_metadata")
+    else:
+        payload["book_metadata"] = metadata
+    path.write_text(json.dumps(payload))
+
+    assert load_project(path).book_metadata is None
+
+
 @pytest.mark.parametrize("keep_range", [None, (2.5, 118.0)])
 @pytest.mark.parametrize("reviewed", [False, True])
 def test_project_round_trip_preserves_review_acknowledgement_and_reasons(tmp_path, monkeypatch, keep_range, reviewed):

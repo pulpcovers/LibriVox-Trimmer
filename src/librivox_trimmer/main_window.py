@@ -1,7 +1,9 @@
 from pathlib import Path
 import shutil
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
+
+from requests import RequestException
 
 from PySide6.QtCore import QEvent, QThreadPool, QTimer, Qt, QUrl, Slot
 from PySide6.QtGui import QBrush, QColor
@@ -43,7 +45,7 @@ from librivox_trimmer.download_state import (
     lock_download_directory,
     mark_managed_directory,
 )
-from librivox_trimmer.librivox_client import download_project_archive
+from librivox_trimmer.librivox_client import download_project_archive, fetch_project_metadata
 from librivox_trimmer.metadata import read_track
 from librivox_trimmer.models import natural_path_key
 from librivox_trimmer.project import (
@@ -67,6 +69,13 @@ from librivox_trimmer.settings import AppSettings, load_settings, save_settings
 from librivox_trimmer.settings_dialog import SettingsDialog
 
 
+@dataclass(frozen=True)
+class _MetadataFetchResult:
+    source_url: str
+    metadata: dict | None
+    warning: str = ""
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -78,6 +87,8 @@ class MainWindow(QMainWindow):
         self._tracks: list[Path] = []
         self._project_path: Path | None = None
         self._source_url = ""
+        self._book_metadata: dict | None = None
+        self._metadata_warning = ""
         self._managed_audio_dir: Path | None = None
         self._reviews: dict[Path, TrackReview] = {}
         self._has_missing_tracks = False
@@ -230,14 +241,14 @@ class MainWindow(QMainWindow):
         intro_layout.addLayout(intro_form)
         outro_layout.addLayout(outro_form)
 
-        self._preview_intro_button = QPushButton("Preview intro cut")
-        self._preview_outro_button = QPushButton("Preview outro cut")
-        self._preview_ending_button = QPushButton("Preview chapter ending")
+        self._preview_intro_button = QPushButton("Play removed intro")
+        self._preview_outro_button = QPushButton("Play removed outro")
+        self._preview_ending_button = QPushButton("Play kept ending")
         self._preview_ending_button.setToolTip(
             "Play the last five seconds of retained narration, skip the removed "
             "outro, and include any retained book-ending announcement."
         )
-        self._preview_kept_button = QPushButton("Preview Kept Intro")
+        self._preview_kept_button = QPushButton("Play Kept Intro")
         self._preview_intro_button.clicked.connect(self._preview_intro_cut)
         self._preview_outro_button.clicked.connect(self._preview_outro_cut)
         self._preview_ending_button.clicked.connect(self._preview_chapter_ending)
@@ -572,6 +583,7 @@ class MainWindow(QMainWindow):
         preferences = self._settings
 
         def download_and_extract(report_progress) -> ProjectDocument:
+            metadata = {}
             with lock_download_directory(project_path.parent, assets_dir):
                 assets_dir.mkdir(parents=True, exist_ok=False)
                 mark_managed_directory(assets_dir)
@@ -581,6 +593,7 @@ class MainWindow(QMainWindow):
                         assets_dir,
                         progress_callback=report_progress,
                         quality=preferences.download_quality,
+                        metadata_callback=lambda value: metadata.update(value or {}),
                     )
                     tracks = extract_mp3s(archive_path, assets_dir / "chapters")
                     archive_path.unlink(missing_ok=True)
@@ -590,6 +603,7 @@ class MainWindow(QMainWindow):
                         source_url=project_url,
                         managed_audio_dir=assets_dir,
                         detection_settings=preferences.detection,
+                        book_metadata=metadata or None,
                     )
                 except Exception:
                     shutil.rmtree(assets_dir, ignore_errors=True)
@@ -678,6 +692,8 @@ class MainWindow(QMainWindow):
     def _set_project(self, project: ProjectDocument) -> None:
         self._project_path = project.path
         self._source_url = project.source_url
+        self._book_metadata = project.book_metadata
+        self._metadata_warning = ""
         self._managed_audio_dir = project.managed_audio_dir
         self._has_missing_tracks = False
         self._project_detection = project.detection_settings or self._settings.detection
@@ -783,6 +799,8 @@ class MainWindow(QMainWindow):
             return
         self._project_path = None
         self._source_url = ""
+        self._book_metadata = None
+        self._metadata_warning = ""
         self._managed_audio_dir = None
         self._reviews.clear()
         self._has_missing_tracks = False
@@ -810,6 +828,14 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_worker_progress(self, update) -> None:
+        if isinstance(update, _MetadataFetchResult):
+            if update.source_url != self._source_url:
+                return
+            self._metadata_warning = update.warning
+            if update.metadata is not None:
+                self._book_metadata = update.metadata
+                self._save_project_without_dialog()
+            return
         if isinstance(update, str):
             self._status.setText(update)
             return
@@ -972,6 +998,7 @@ class MainWindow(QMainWindow):
             managed_audio_dir=self._managed_audio_dir,
             reviews=self._reviews,
             detection_settings=self._project_detection,
+            book_metadata=self._book_metadata,
         )
 
     def _save_project_without_dialog(self) -> None:
@@ -1265,14 +1292,35 @@ class MainWindow(QMainWindow):
         settings = self._project_detection
         self._bulk_results.clear()
         self._bulk_errors.clear()
+        self._metadata_warning = ""
+        source_url = self._source_url
+        needs_metadata = not self._book_metadata and bool(source_url)
         cancel = threading.Event()
+
+        def analyze_all(report_progress):
+            if needs_metadata and not cancel.is_set():
+                report_progress("Fetching audiobook metadata from LibriVox...")
+                try:
+                    metadata = fetch_project_metadata(source_url)
+                except (RequestException, OSError, ValueError) as error:
+                    update = _MetadataFetchResult(
+                        source_url, None,
+                        f"Audiobook metadata could not be fetched; analysis continued without it. {error}",
+                    )
+                else:
+                    update = _MetadataFetchResult(
+                        source_url, metadata,
+                        "Audiobook metadata was not available on the project page; analysis continued without it."
+                        if metadata is None else "",
+                    )
+                report_progress(update)
+            return analyze_tracks_boundaries(
+                track_paths, progress_callback=report_progress,
+                settings=settings, should_cancel=cancel.is_set,
+            )
+
         self._start_worker(
-            lambda report_progress: analyze_tracks_boundaries(
-                track_paths,
-                progress_callback=report_progress,
-                settings=settings,
-                should_cancel=cancel.is_set,
-            ),
+            analyze_all,
             lambda results: self._bulk_detection_finished(
                 results, cancelled=cancel.is_set(), total=len(track_paths),
             ),
@@ -1334,6 +1382,8 @@ class MainWindow(QMainWindow):
         )
         if review_count:
             summary += f" {review_count} chapter(s) need review; hover over marked chapters for details."
+        if self._metadata_warning:
+            summary += " " + self._metadata_warning
         self._status.setText(summary)
 
     def _apply_detection(self, path: Path, detection) -> bool:

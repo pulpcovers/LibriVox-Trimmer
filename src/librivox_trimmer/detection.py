@@ -334,9 +334,8 @@ def _confirm_reader_credit(
         cue_end = candidate.reader_credit_prefix_end_seconds
         first_pause = reader_credit_pause(track_path, cue_end, crop_end) if cue_end is not None else None
         following = [word for word in focused_words if word.end > credit_end + 0.05]
-        pause = (
-            refine_intro_resume_start(track_path, credit_end, following[0].end + 0.1)
-            if following else None
+        pause = refine_intro_resume_start(
+            track_path, credit_end, following[0].end + 0.1 if following else crop_end,
         )
         if (
             pause is not None and pause >= credit_end
@@ -386,10 +385,23 @@ def _refine_intro(track_path, detection, intro_words, safety_gap, report, title)
     notice_end = intro.notice_end_seconds
     if notice_end is None:
         notice_end = intro.keep_time_seconds - safety_gap
-    following_words = [word for word in intro_words if word.end > notice_end + 0.05]
     refined_resume = None
     if intro.heading_start_seconds is not None:
         refined_resume = refine_cut_before_heading(track_path, intro.heading_start_seconds)
+        if refined_resume is None and intro.notice_only_end_seconds is not None:
+            notice_end = intro.notice_only_end_seconds
+            intro = replace(
+                intro, keep_time_seconds=notice_end, notice_end_seconds=notice_end,
+                heading_start_seconds=None,
+            )
+            reason = (
+                "Could not confirm a pause before the detected chapter heading. "
+                "Additional opening audio was kept to avoid cutting speech. "
+                "Preview the intro before exporting."
+            )
+            detection = _with_review_reason(detection, "intro", reason)
+            report(f"Review intro cut: {title}. {reason}")
+    following_words = [word for word in intro_words if word.end > notice_end + 0.05]
     if refined_resume is not None:
         pass
     elif intro.reader_credit_start_seconds is not None:

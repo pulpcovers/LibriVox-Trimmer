@@ -155,9 +155,10 @@ def test_later_chapter_proposes_cut_after_number_but_defaults_to_whole_heading()
     assert before[-1].end < result.intro.removal_start_seconds < notice[0].start
 
 
-def test_first_notice_retains_attached_reader_credit_and_following_title():
+@pytest.mark.parametrize("cue", ["Recording", "Recorded"])
+def test_first_notice_retains_attached_reader_credit_and_following_title(cue):
     notice = make_words("This is a LibriVox recording")
-    credit = make_words("Recording by Phil Reader.", start=2.7)
+    credit = make_words(f"{cue} by Phil Reader.", start=2.7)
     title = make_words("Beyond the Black River by Robert Howard", start=5.3)
     result = detect_boundaries(notice + credit + title, [], is_first_chapter=True)
     assert notice[-1].end < result.intro.keep_time_seconds < credit[0].start

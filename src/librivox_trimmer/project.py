@@ -65,6 +65,7 @@ class ProjectDocument:
     managed_audio_dir: Path | None
     tracks: tuple[ProjectTrack, ...]
     detection_settings: DetectionSettings | None = None
+    book_metadata: dict | None = None
 
 
 def project_assets_dir(project_path: Path) -> Path:
@@ -131,6 +132,7 @@ def save_project(
     managed_audio_dir: Path | None = None,
     reviews: Mapping[Path, TrackReview] | None = None,
     detection_settings: DetectionSettings | None = None,
+    book_metadata: dict | None = None,
 ) -> ProjectDocument:
     project_path = project_path.resolve()
     project_directory = project_path.parent.resolve()
@@ -148,6 +150,8 @@ def save_project(
         created_at = existing.created_at
         if detection_settings is None:
             detection_settings = existing.detection_settings
+        if book_metadata is None and source_url == existing.source_url:
+            book_metadata = existing.book_metadata
     if detection_settings is not None:
         detection_settings.validate()
 
@@ -211,6 +215,7 @@ def save_project(
         "managed_audio_dir": managed_reference,
         "tracks": serialized_tracks,
         "detection_settings": detection_settings.to_dict() if detection_settings else None,
+        "book_metadata": book_metadata,
     }
     project_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -304,6 +309,14 @@ def load_project(project_path: Path, *, allow_network_paths: bool = False) -> Pr
                 ),
             )
         )
+    book_metadata = payload.get("book_metadata")
+    if not (
+        isinstance(book_metadata, dict)
+        and book_metadata.get("schema_version") == 1
+        and isinstance(book_metadata.get("chapters"), list)
+        and book_metadata["chapters"]
+    ):
+        book_metadata = None
     return ProjectDocument(
         path=project_path,
         name=str(payload.get("name", project_path.stem)),
@@ -316,6 +329,7 @@ def load_project(project_path: Path, *, allow_network_paths: bool = False) -> Pr
             DetectionSettings.from_dict(payload["detection_settings"])
             if payload.get("detection_settings") is not None else None
         ),
+        book_metadata=book_metadata,
     )
 
 

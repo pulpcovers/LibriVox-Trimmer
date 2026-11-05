@@ -256,7 +256,7 @@ def detect_intro_boundary(
         _find_phrase_matches(words, (title_text,), threshold=88)
         if len(title_text.split()) >= 2 else []
     )
-    credits = _find_phrase_matches(words, ("recording by", "reading by", "read by"), threshold=90)
+    credits = _find_phrase_matches(words, ("recording by", "recorded by", "reading by", "read by"), threshold=90)
     for credit in credits:
         if not notice_end - 0.05 <= credit.start <= notice_end + 2.0:
             continue

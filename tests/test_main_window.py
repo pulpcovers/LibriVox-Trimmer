@@ -243,7 +243,7 @@ def test_preview_buttons_toggle_stop_replay_and_switching(window, monkeypatch, t
     assert player.play_calls == 1
 
     intro_button.click()
-    assert intro_button.text() == "Preview intro cut"
+    assert intro_button.text() == "Play removed intro"
     assert window._pending_preview is None
     assert not window._playback_timer.isActive()
 
@@ -251,18 +251,18 @@ def test_preview_buttons_toggle_stop_replay_and_switching(window, monkeypatch, t
     assert player.play_calls == 2
 
     kept_button = window._preview_kept_button
-    assert kept_button.text() == "Preview Kept Intro"
+    assert kept_button.text() == "Play Kept Intro"
     assert window._intro_panel.layout().indexOf(kept_button) == (
         window._intro_panel.layout().indexOf(intro_button) + 1
     )
     kept_button.click()
-    assert intro_button.text() == "Preview intro cut"
+    assert intro_button.text() == "Play removed intro"
     assert kept_button.text() == "Stop kept-intro preview"
     assert player.position == 1000
     assert player.play_calls == 3
 
     kept_button.click()
-    assert kept_button.text() == "Preview Kept Intro"
+    assert kept_button.text() == "Play Kept Intro"
     assert window._pending_preview is None
     assert player.play_calls == 3
 
@@ -427,6 +427,75 @@ def test_detect_all_button_queues_all_tracks_with_progress(window, tmp_path, mon
     assert not window._detect_all_button.isEnabled()
     window._finish_worker()
     assert window._detect_all_button.text() == "Analyse all chapters"
+
+
+@pytest.mark.parametrize("cached,has_url", [(False, True), (True, True), (False, False)])
+def test_analyze_all_fetches_metadata_only_when_missing_and_url_is_saved(window, monkeypatch, tmp_path, cached, has_url):
+    metadata = {"schema_version": 1, "title": "Book", "chapters": [{"title": "Chapter"}]}
+    window._tracks = [tmp_path / "chapter.mp3"]
+    window._source_url = "https://librivox.org/book/" if has_url else ""
+    window._book_metadata = metadata if cached else None
+    captured = {}
+    fetches, saves, analyses = [], [], []
+    monkeypatch.setattr(window, "_start_worker", lambda function, *_args, **_kwargs: captured.update(work=function))
+    monkeypatch.setattr(main_window, "fetch_project_metadata", lambda url: fetches.append(url) or metadata)
+    monkeypatch.setattr(window, "_save_project_without_dialog", lambda: saves.append(window._book_metadata))
+    monkeypatch.setattr(main_window, "analyze_tracks_boundaries", lambda paths, **_kwargs: analyses.append(paths) or [])
+
+    window._detect_all()
+    assert fetches == []
+    captured["work"](window._on_worker_progress)
+
+    should_fetch = not cached and has_url
+    assert fetches == ([window._source_url] if should_fetch else [])
+    assert saves == ([metadata] if should_fetch else [])
+    assert analyses == [window._tracks]
+    assert window._book_metadata == (metadata if cached or should_fetch else None)
+
+
+@pytest.mark.parametrize("failure", ["network", "missing"])
+def test_metadata_failure_does_not_block_analysis_and_is_reported(window, monkeypatch, tmp_path, failure):
+    window._tracks = [tmp_path / "chapter.mp3"]
+    window._source_url = "https://librivox.org/book/"
+    captured, analyses = {}, []
+    monkeypatch.setattr(window, "_start_worker", lambda function, *_args, **_kwargs: captured.update(work=function))
+    monkeypatch.setattr(window, "_save_project_without_dialog", lambda: None)
+
+    def fetch(_url):
+        if failure == "network":
+            raise main_window.RequestException("Connection unavailable")
+        return None
+
+    monkeypatch.setattr(main_window, "fetch_project_metadata", fetch)
+    monkeypatch.setattr(main_window, "analyze_tracks_boundaries", lambda paths, **_kwargs: analyses.append(paths) or [])
+
+    window._detect_all()
+    results = captured["work"](window._on_worker_progress)
+    window._tracks = []
+    window._bulk_detection_finished(results)
+
+    assert len(analyses) == 1
+    assert window._book_metadata is None
+    assert "analysis continued without it" in window._status.text()
+
+
+def test_cancel_before_metadata_fetch_skips_network_and_analysis_work(window, monkeypatch, tmp_path):
+    window._tracks = [tmp_path / "chapter.mp3"]
+    window._source_url = "https://librivox.org/book/"
+    captured = {}
+    monkeypatch.setattr(window, "_start_worker", lambda function, *_args, **_kwargs: captured.update(work=function))
+    monkeypatch.setattr(main_window, "fetch_project_metadata", lambda *_args: pytest.fail("Cancelled metadata request"))
+
+    def analyze(_paths, **options):
+        assert options["should_cancel"]()
+        return []
+
+    monkeypatch.setattr(main_window, "analyze_tracks_boundaries", analyze)
+    window._detect_all()
+    window._detect_all()
+
+    assert captured["work"](window._on_worker_progress) == []
+    assert window._book_metadata is None
 
 
 def test_cancelled_bulk_analysis_reports_kept_chapters(window, monkeypatch):
@@ -756,7 +825,7 @@ def test_chapter_ending_button_toggles_and_skips_removed_outro(window, tmp_path,
     button.click()
     assert window._pending_preview is None
     assert window._preview_queue == []
-    assert button.text() == "Preview chapter ending"
+    assert button.text() == "Play kept ending"
     button.click()
     assert player.play_calls == 2
     window._stop_preview()
@@ -1127,14 +1196,14 @@ def test_unreadable_preferences_warn_the_user_and_fall_back_to_defaults(qapp, tm
 
 def test_preview_running_to_the_end_of_the_file_finishes_when_the_media_ends(window):
     window._active_preview_button = window._preview_ending_button
-    window._active_preview_original_text = "Preview chapter ending"
+    window._active_preview_original_text = "Play kept ending"
     window._pending_preview = (1_000_000, 1_445_900)
     window._preview_started = True
 
     window._on_media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
 
     assert window._pending_preview is None
-    assert window._preview_ending_button.text() == "Preview chapter ending"
+    assert window._preview_ending_button.text() == "Play kept ending"
     assert window._status.text() == "Preview finished"
 
 

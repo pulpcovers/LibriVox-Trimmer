@@ -22,14 +22,15 @@ def _timed(text, start, step=0.75):
 
 @pytest.mark.parametrize("confirmed_pause", [11.75, None])
 @pytest.mark.parametrize("cue_start", [8.4, 9.0])
-def test_credit_retry_protects_narration_without_chapter_metadata(tmp_path, monkeypatch, confirmed_pause, cue_start):
+@pytest.mark.parametrize("cue", ["Recording", "Recorded"])
+def test_credit_retry_protects_narration_without_chapter_metadata(tmp_path, monkeypatch, confirmed_pause, cue_start, cue):
     notice = _timed("This LibriVox recording is in the public domain", 5, 0.4)
     initial = notice + [
-        TimedWord("Recording", 8.72, 9.9), TimedWord("by", 9.9, 10.44),
+        TimedWord(cue, 8.72, 9.9), TimedWord("by", 9.9, 10.44),
         TimedWord("Nigel", 10.44, 10.68), TimedWord("Fisher", 10.68, 11.06),
     ] + _timed("Our reception in Kalnagar The Royal City never contained such splendor", 11.06, 0.4)
     focused = [
-        TimedWord("Recording", cue_start, 9.9), TimedWord("by", 9.9, 10.44),
+        TimedWord(cue, cue_start, 9.9), TimedWord("by", 9.9, 10.44),
         TimedWord("Nigel", 10.44, 10.68), TimedWord("Fisher.", 10.68, 11.06),
     ] + _timed("Our reception in Kalnagar", 12.3, 0.4)
     monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
@@ -83,6 +84,43 @@ def test_credit_followed_by_a_short_aligned_pause_is_confirmed(monkeypatch):
     assert result.intro.keep_time_seconds == 10.95
     assert result.intro.reader_credit_end_seconds == pytest.approx(10.4)
     assert result.intro_review_reason is None
+
+
+@pytest.mark.parametrize("punctuated", [True, False])
+def test_credit_pause_is_checked_when_focused_transcript_has_no_following_words(monkeypatch, punctuated):
+    credit = _FISHER[:3] + [TimedWord("Fisher." if punctuated else "Fisher", 10.0, 10.4)]
+    result = _credit_case(
+        monkeypatch, credit, [],
+        pauses={0.75: (10.6, 12.0)}, resume=11.3,
+    )
+
+    if punctuated:
+        assert result.intro.keep_time_seconds == 11.3
+        assert result.intro.reader_credit_end_seconds == pytest.approx(10.4)
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds < credit[0].start
+        assert result.intro.reader_credit_end_seconds is None
+        assert "protect narration" in result.intro_review_reason
+
+
+def test_unconfirmed_heading_does_not_authorize_removing_front_matter(tmp_path, monkeypatch):
+    suggestion = BoundarySuggestion(
+        17.5, 95, "This recording is in the public domain",
+        notice_end_seconds=16.9, notice_only_end_seconds=13.42,
+        heading_start_seconds=16.9,
+    )
+    monkeypatch.setattr(detection, "refine_cut_before_heading", lambda *_args: None)
+
+    result = detection._refine_intro(
+        tmp_path / "chapter.mp3", BoundaryDetection(suggestion, None), [],
+        0.6, lambda _message: None, "Chapter",
+    )
+
+    assert result.intro.keep_time_seconds == 13.42
+    assert result.intro.notice_end_seconds == 13.42
+    assert result.intro.heading_start_seconds is None
+    assert "Additional opening audio was kept" in result.intro_review_reason
 
 
 def test_short_pause_is_not_enough_when_a_longer_pause_falls_inside_the_credit(monkeypatch):

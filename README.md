@@ -122,6 +122,10 @@ chapters** to process the loaded list. The app suggests where to remove intro
 notices and chapter-ending announcements; it does not apply cuts automatically.
 Review the Intro and Outro fields and listen to the previews before exporting.
 
+Catalog details are saved with fetched projects. If they are missing, **Analyse all
+chapters** tries to retrieve them from the project's saved LibriVox URL. If they
+cannot be retrieved, analysis continues without them.
+
 While all chapters are being analysed, the button changes to **Cancel Analysis**.
 Cancelling keeps and saves the results for chapters that already finished; the
 chapter being analysed at that moment is left unchanged. Cancellation takes
@@ -141,11 +145,11 @@ these previews and adjust the cut manually if needed.
 
 ### Preview and Export
 
-- **Preview intro cut** plays the proposed removed notice.
-- **Preview Kept Intro** starts with the preserved opening, skips the removed
+- **Play removed intro** plays the proposed removed notice.
+- **Play Kept Intro** starts with the preserved opening, skips the removed
   notice, and continues through kept narration and any retained book ending.
-- **Preview outro cut** plays the proposed removed ending marker.
-- **Preview chapter ending** plays the end of the kept narration and any retained
+- **Play removed outro** plays the proposed removed ending marker.
+- **Play kept ending** plays the end of the kept narration and any retained
   book ending.
 - **Export trimmed chapter...** exports the selected chapter. **Export all
   chapters...** exports every loaded chapter with its current cut settings and
