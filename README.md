@@ -4,7 +4,7 @@ A Windows-first desktop app for reviewing and trimming LibriVox audiobook
 chapters. It analyses chapter openings and endings, suggests cut points, and
 exports approved MP3 intervals without re-encoding.
 
-Current version: 0.6.0 (beta)
+Current version: 0.7.0 (beta)
 
 ## Highlights
 
@@ -21,7 +21,7 @@ and preview uncertain boundaries before exporting.
 
 ## Windows Beta Download
 
-Download the Windows ZIP from [GitHub Releases](https://github.com/pulpcovers/LibriVox-Trimmer/releases/tag/v0.6.0),
+Download the Windows ZIP from [GitHub Releases](https://github.com/pulpcovers/LibriVox-Trimmer/releases/tag/v0.7.0),
 extract the entire ZIP, and run **LibriVox Trimmer.exe** inside the extracted folder.
 Keep the accompanying `_internal` folder beside the executable. Python and a separate
 FFmpeg installation are not required. The speech model downloads on first analysis.
@@ -29,7 +29,7 @@ FFmpeg installation are not required. The speech model downloads on first analys
 This beta is unsigned, so Windows may show an unknown-publisher or SmartScreen warning.
 Only proceed after checking that the download came from this repository's release.
 A SHA-256 checksum file is provided alongside the ZIP. In PowerShell, use
-`Get-FileHash .\LibriVox-Trimmer-0.6.0-windows.zip -Algorithm SHA256` to compare it.
+`Get-FileHash .\LibriVox-Trimmer-0.7.0-windows.zip -Algorithm SHA256` to compare it.
 
 ## Install and Test on Windows
 
