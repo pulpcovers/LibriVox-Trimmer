@@ -42,6 +42,27 @@ def test_fetch_chapters_starts_without_save_file_dialog(tmp_path, monkeypatch):
     application.processEvents()
 
 
+@pytest.mark.parametrize("auto_analyze", [False, True])
+def test_download_finished_starts_analyze_all_only_when_preference_is_enabled(window, tmp_path, monkeypatch, auto_analyze):
+    from types import SimpleNamespace
+
+    project = SimpleNamespace(
+        path=tmp_path / "Book.lvproj",
+        tracks=[SimpleNamespace(path=tmp_path / "01.mp3")],
+    )
+    calls = []
+    window._settings = AppSettings(auto_analyze_after_download=auto_analyze)
+    monkeypatch.setattr(window, "_set_project", lambda _project: None)
+    monkeypatch.setattr(window, "_add_tracks", lambda tracks, **_kwargs: calls.append(("load", tracks)))
+    monkeypatch.setattr(window, "_detect_all", lambda: calls.append(("analyze", None)))
+
+    window._download_finished(project)
+
+    assert calls == [("load", [project.tracks[0].path])] + (
+        [("analyze", None)] if auto_analyze else []
+    )
+
+
 def test_open_project_dialog_starts_in_app_projects_folder(tmp_path, monkeypatch):
     application = QApplication.instance() or QApplication([])
     project_directory = tmp_path / "local app data" / "Projects"
@@ -506,6 +527,27 @@ def test_cancelled_bulk_analysis_reports_kept_chapters(window, monkeypatch):
     assert window._status.text().startswith("Analysis cancelled: kept results for 0 of 3 chapters")
 
 
+def test_export_selected_preserves_source_filename(window, frame_grid, tmp_path, monkeypatch):
+    source = window._tracks[0]
+    output_directory = tmp_path / "exports"
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(output_directory))
+    captured = {}
+    monkeypatch.setattr(
+        window, "_start_worker",
+        lambda function, *_args: captured.update(function=function),
+    )
+    calls = []
+    monkeypatch.setattr(
+        main_window, "trim_mp3",
+        lambda source, target, *_args, **_kwargs: calls.append((source, target)) or target,
+    )
+
+    window._trim_selected()
+    captured["function"]()
+
+    assert calls == [(source, output_directory / source.name)]
+
+
 def test_export_all_requires_confirmation_before_opening_folder(window, tmp_path, monkeypatch):
     window._tracks = [tmp_path / "chapter01.mp3"]
     captured = {}
@@ -573,7 +615,7 @@ def test_export_all_uses_each_chapters_saved_cut_settings(window, tmp_path, monk
         (12, 95, {"intro_removal_start": 0.0, "outro_resume_start": 105}),
     ]
     assert [call[1].name for call in calls] == [
-        "chapter01_trimmed.mp3", "chapter02_trimmed.mp3",
+        "chapter01.mp3", "chapter02.mp3",
     ]
     assert len(result[0]) == 2 and result[1] == []
     assert len(progress) == 2
@@ -948,6 +990,30 @@ def test_waveform_click_writes_frame_snapped_value_to_selected_field(window, fra
     end_boundary = grid.origin + 3500 * grid.frame_seconds
     window._apply_waveform_cut(end_boundary)
     assert grid.exported_cut(window._keep_end.value(), starts_kept_audio=False) == pytest.approx(end_boundary)
+
+
+@pytest.mark.parametrize("decoded_end", [99.95, 100.0])
+def test_end_waveform_does_not_reload_when_marker_is_just_past_audio_end(
+    window, frame_grid, monkeypatch, decoded_end,
+):
+    from array import array
+    from librivox_trimmer.waveform import WaveformWindow
+
+    window._waveform_field.setCurrentIndex(2)
+    window._keep_end.setValue(100.0)
+    window._keep_end.setMaximum(100.0)
+    path = window._tracks[0].resolve()
+    worker = object()
+    window._waveform_workers.add(worker)
+    waveform = WaveformWindow(95.0, 8000, array("h", [0]) * round((decoded_end - 95.0) * 8000))
+    reloads = []
+    monkeypatch.setattr(window, "_refresh_waveform", lambda: reloads.append(True))
+
+    window._waveform_loaded(worker, (window._waveform_request, path, frame_grid, waveform))
+
+    assert reloads == []
+    assert window._waveform.window_range == (95.0, decoded_end)
+    assert window._waveform.cut == frame_grid.exported_cut(100.0, starts_kept_audio=False)
 
 
 def test_waveform_refuses_cuts_out_of_order(window, frame_grid):

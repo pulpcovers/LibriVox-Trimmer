@@ -51,12 +51,15 @@ class AppSettings:
     projects_directory: str = ""
     output_directory: str = ""
     download_quality: str = "best"
+    auto_analyze_after_download: bool = False
     detection: DetectionSettings = field(default_factory=DetectionSettings)
 
     def validate(self) -> None:
         self.detection.validate()
         if self.download_quality not in ("best", "smaller"):
             raise ValueError("Unsupported download quality.")
+        if type(self.auto_analyze_after_download) is not bool:
+            raise ValueError("Automatic analysis preference must be true or false.")
         for value in (self.projects_directory, self.output_directory):
             if not isinstance(value, str) or (value and not Path(value).expanduser().is_absolute()):
                 raise ValueError("Storage folders must be absolute paths.")

@@ -623,6 +623,8 @@ class MainWindow(QMainWindow):
         self._set_project(project)
         self._add_tracks([track.path for track in project.tracks], persist=False)
         self._status.setText(f"Project saved: {project.path}")
+        if self._settings.auto_analyze_after_download:
+            self._detect_all()
 
     def _open_project(self) -> None:
         initial_directory = (
@@ -1106,7 +1108,8 @@ class MainWindow(QMainWindow):
         if request != self._waveform_request or path is None or path.resolve() != key:
             return
         self._waveform.set_waveform(window, grid)
-        self._sync_waveform_cut()
+        marker, starts_kept = self._cut_marker(path)
+        self._waveform.set_cut(marker, starts_kept_audio=starts_kept)
 
     def _waveform_failed(self, worker: Worker, request: int, message: str) -> None:
         self._waveform_workers.discard(worker)
@@ -1613,7 +1616,7 @@ class MainWindow(QMainWindow):
         )
         if not output_directory:
             return
-        output_path = Path(output_directory) / f"{source_path.stem}_trimmed.mp3"
+        output_path = Path(output_directory) / source_path.name
         self._start_worker(
             lambda: trim_mp3(
                 source_path, output_path, keep_start, keep_end,
@@ -1674,7 +1677,7 @@ class MainWindow(QMainWindow):
                     self, "Invalid ending range", f"{source_path.name}: 'Retain book ending from' must be after 'End narration at' and before the chapter ends.",
                 )
                 return
-            output_path = Path("unused") / f"{source_path.stem}_trimmed.mp3"
+            output_path = Path("unused") / source_path.name
             if output_path.name.casefold() in targets:
                 QMessageBox.warning(
                     self, "Duplicate chapter names",
@@ -1694,7 +1697,7 @@ class MainWindow(QMainWindow):
             return
         output_directory = Path(output_directory)
         jobs = [
-            (source, output_directory / f"{source.stem}_trimmed.mp3", start, end, notice, resume)
+            (source, output_directory / source.name, start, end, notice, resume)
             for source, start, end, notice, resume in jobs
         ]
 

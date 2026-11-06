@@ -155,6 +155,9 @@ these previews and adjust the cut manually if needed.
   chapters...** exports every loaded chapter with its current cut settings and
   asks you to confirm that you have reviewed the cut points.
 
+Exports keep the original filenames in the chosen output folder. Source files
+and existing destination files are never overwritten.
+
 Use the Intro and Outro time fields to adjust suggestions. **Remove intro notice
 from** and **Resume audio at** control the opening cut. **End narration at** and
 **Retain book ending from** control the outro. A retained book ending is optional.

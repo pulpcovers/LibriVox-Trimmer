@@ -52,6 +52,7 @@ class BoundarySuggestion:
     # Latest time an intro removal start may move to when snapped into a pause.
     removal_refinement_limit_seconds: float | None = None
     removal_start_seconds: float = 0.0
+    notice_start_seconds: float | None = None
     resume_after_outro_seconds: float | None = None
     retained_ending_match_end_seconds: float | None = None
     notice_end_seconds: float | None = None
@@ -326,6 +327,7 @@ def detect_intro_boundary(
         matched_text=matched_text,
         removal_refinement_limit_seconds=min(cluster, key=lambda match: match.start).end,
         removal_start_seconds=removal_start,
+        notice_start_seconds=notice_start,
         notice_end_seconds=notice_end,
         reader_credit_start_seconds=reader_credit_start,
         reader_credit_end_seconds=reader_credit_end,
@@ -425,10 +427,13 @@ def _announcement_parts(text):
 def remove_duplicate_first_announcement(
     words: Sequence[TimedWord], intro: BoundarySuggestion, *, retain_book_information: bool = True,
 ) -> BoundarySuggestion:
-    if intro.removal_start_seconds <= 0:
+    if intro.removal_start_seconds <= 0 and retain_book_information:
         return intro
     tokens = _tokenize(words)
-    before = [word.text for word in tokens if word.end <= intro.removal_start_seconds]
+    opening_end = intro.removal_start_seconds or intro.notice_start_seconds
+    if opening_end is None:
+        return intro
+    before = [word.text for word in tokens if word.end <= opening_end]
     after = [
         word.text for word in tokens
         if word.end > intro.keep_time_seconds
@@ -452,7 +457,11 @@ def remove_duplicate_first_announcement(
             index for index, token in enumerate(before[:-1])
             if token in {"chapter", "section"} and _number_value(before[index + 1]) is not None
         ), None)
-        title_start = declaration + 2 if declaration is not None else len(before)
+        title_start = (
+            declaration + 2
+            if declaration is not None
+            else 1 if before and _number_value(before[0]) is not None else len(before)
+        )
         if title_start < len(before) and before[title_start] == "of":
             title_start += 1
         title_end = before.index("by", title_start) if "by" in before[title_start:] else len(before)
@@ -467,7 +476,46 @@ def remove_duplicate_first_announcement(
             for later in range(min(10, max(0, len(later_content) - 1)))
         )
         if repeated_number or repeated_title or repeated_announcement:
-            return replace(intro, removal_start_seconds=0.0)
+            repeated_title_heading = None
+            if repeated_title and len(title_content) >= 2:
+                later_words = [
+                    word for word in tokens
+                    if word.end > intro.keep_time_seconds
+                    and word.start < intro.keep_time_seconds + 20
+                ]
+                later_significant = [
+                    (index, _normalize_word(word.text))
+                    for index, word in enumerate(later_words)
+                    if _normalize_word(word.text) not in {"of", "the", "by", "a", "an"}
+                ]
+                for start in range(len(later_significant) - len(title_content) + 1):
+                    if not all(
+                        fuzz.ratio(title_word, later_significant[start + offset][1]) >= 85
+                        for offset, title_word in enumerate(title_content)
+                    ):
+                        continue
+                    title_end = later_significant[start + len(title_content) - 1][0]
+                    for index in range(
+                        title_end + 1,
+                        min(len(later_words), title_end + 5),
+                    ):
+                        token = _normalize_word(later_words[index].text)
+                        if _number_value(token) is not None:
+                            repeated_title_heading = later_words[index].start
+                            break
+                        if (
+                            token in {"chapter", "section", "part"}
+                            and index + 1 < len(later_words)
+                            and _number_value(_normalize_word(later_words[index + 1].text)) is not None
+                        ):
+                            repeated_title_heading = later_words[index + 1].start
+                            break
+                    if repeated_title_heading is not None:
+                        break
+            return replace(
+                intro, removal_start_seconds=0.0, heading_cut_seconds=None,
+                heading_start_seconds=repeated_title_heading,
+            )
         before_words = [word for word in tokens if word.end <= intro.removal_start_seconds]
         declarations = [
             index for index, word in enumerate(before_words[:-1])
@@ -482,8 +530,56 @@ def remove_duplicate_first_announcement(
             return replace(intro, heading_cut_seconds=chapter_end)
         return intro
     if repeated_announcement:
-        return replace(intro, removal_start_seconds=0.0)
+        return replace(intro, removal_start_seconds=0.0, heading_cut_seconds=None)
     return intro
+
+
+def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundarySuggestion) -> bool:
+    """Whether a numbered opening announcement may be repeated after the notice but was not transcribed."""
+    if intro.notice_start_seconds is None or intro.notice_end_seconds is None:
+        return False
+    tokens = _tokenize(words)
+    before = [token.text for token in tokens if token.end <= intro.notice_start_seconds]
+    after = [
+        token.text for token in tokens
+        if intro.notice_end_seconds <= token.start < intro.notice_end_seconds + 20
+    ]
+    by_index = next((index for index, token in enumerate(before) if token == "by"), None)
+    if by_index is None:
+        return False
+
+    declaration = next((
+        index for index, token in enumerate(before[:by_index - 1])
+        if token in {"chapter", "section", "part"}
+        and _number_value(before[index + 1]) is not None
+    ), None)
+    if declaration is not None:
+        title_start = declaration + 2
+    elif before and _number_value(before[0]) is not None:
+        title_start = 1
+    else:
+        return False
+    if title_start < by_index and before[title_start] == "of":
+        title_start += 1
+    title_content = [
+        token for token in before[title_start:by_index]
+        if token not in {"of", "the", "by", "a", "an"}
+    ]
+    if len(title_content) < 2:
+        return False
+
+    significant_after = [token for token in after if token not in {"of", "the", "by", "a", "an"}]
+    title_repeats = any(
+        all(fuzz.ratio(expected, actual) >= 85 for expected, actual in zip(title_content, significant_after[start:]))
+        for start in range(max(0, len(significant_after) - len(title_content) + 1))
+    )
+    has_numbered_heading = any(
+        (token in {"chapter", "section", "part"}
+         and index + 1 < len(after) and _number_value(after[index + 1]) is not None)
+        or _number_value(token) is not None
+        for index, token in enumerate(after)
+    )
+    return has_numbered_heading and not title_repeats
 
 
 def _title_variants(normalized_title: str) -> list[str]:

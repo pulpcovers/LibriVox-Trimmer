@@ -42,8 +42,10 @@ class SettingsDialog(QDialog):
         detection_form.addRow("Speech model", self._model)
         self._intro = QCheckBox("Detect intro disclaimers")
         self._outro = QCheckBox("Detect spoken outros")
+        self._auto_analyze = QCheckBox("Analyse all chapters automatically after download")
         detection_form.addRow(self._intro)
         detection_form.addRow(self._outro)
+        detection_form.addRow(self._auto_analyze)
         tabs.addTab(detection, "Detection")
 
         advanced = QWidget()
@@ -114,6 +116,7 @@ class SettingsDialog(QDialog):
         self._model.setCurrentIndex(self._model.findData(detection.model_size))
         self._intro.setChecked(detection.detect_intro)
         self._outro.setChecked(detection.detect_outro)
+        self._auto_analyze.setChecked(settings.auto_analyze_after_download)
         self._intro_window.setValue(detection.intro_window_seconds)
         self._outro_window.setValue(detection.outro_window_seconds)
         self._intro_margin.setValue(detection.intro_safety_gap_seconds)
@@ -124,6 +127,7 @@ class SettingsDialog(QDialog):
             projects_directory=self._projects.text().strip(),
             output_directory=self._output.text().strip(),
             download_quality=self._quality.currentData(),
+            auto_analyze_after_download=self._auto_analyze.isChecked(),
             detection=DetectionSettings(
                 model_size=self._model.currentData(),
                 detect_intro=self._intro.isChecked(),

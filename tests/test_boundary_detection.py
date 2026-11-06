@@ -1,6 +1,7 @@
 import pytest
 
 from librivox_trimmer.boundary_detection import detect_boundaries
+from librivox_trimmer.boundary_detection import detect_boundaries, detect_intro_boundary, needs_repeated_book_title_retry
 from librivox_trimmer.transcription import TimedWord
 
 
@@ -9,6 +10,21 @@ def make_words(text: str, start: float = 0) -> list[TimedWord]:
         TimedWord(word, start + index * 0.4, start + index * 0.4 + 0.25, 0.95)
         for index, word in enumerate(text.split())
     ]
+
+
+def test_repeated_book_title_retry_requires_a_missing_title_and_later_numbered_heading():
+    opening = make_words("Chapter eight of The Hour of the Dragon by Robert E Howard")
+    notice = make_words("This is a LibriVox recording", start=6)
+    missing_title = make_words("Chapter 8 A Coin from Acheron", start=12)
+    repeated_title = make_words("The Hour of the Dragon Chapter 8 A Coin from Acheron", start=12)
+
+    missing_title_intro = detect_intro_boundary(opening + notice + missing_title)
+    repeated_title_intro = detect_intro_boundary(opening + notice + repeated_title)
+
+    assert missing_title_intro is not None
+    assert repeated_title_intro is not None
+    assert needs_repeated_book_title_retry(opening + notice + missing_title, missing_title_intro)
+    assert not needs_repeated_book_title_retry(opening + notice + repeated_title, repeated_title_intro)
 
 
 def test_detects_disclaimer_end_and_outro_start():
@@ -97,22 +113,25 @@ def test_later_chapter_drops_book_information_and_earlier_repeated_number():
     assert result.intro.keep_time_seconds < after[0].start
 
 
-@pytest.mark.parametrize(("before_text", "after_text"), [
+@pytest.mark.parametrize(("before_text", "after_text", "number"), [
     (
         "Chapter three of The Hour of the Dragon by Robert E Howard",
         "The Hour of the Dragon III The Cliffs Reel",
+        "iii",
     ),
     (
         "Chapter fourteen of The Hour of the Dragon by Robert E Howard",
         "The Hour of the Dragon 14 The Black Hand of Set",
+        "14",
     ),
     (
         "Chapter eighteen of The Hour of the Dragon by Robert E Howard",
         "The Hour of the Dragon Chapter fifteen I Am the Woman Who Never Died",
+        "fifteen",
     ),
 ])
 def test_later_chapter_drops_heading_when_title_repeats_but_number_does_not(
-    before_text, after_text,
+    before_text, after_text, number,
 ):
     before = make_words(before_text)
     notice = make_words("This is a LibriVox recording", start=8)
@@ -123,6 +142,23 @@ def test_later_chapter_drops_heading_when_title_repeats_but_number_does_not(
     assert result.intro is not None
     assert result.intro.removal_start_seconds == 0
     assert result.intro.keep_time_seconds < after[0].start
+    assert result.intro.heading_start_seconds == next(
+        word.start for word in after if word.text.casefold().strip(".,") == number
+    )
+
+
+def test_later_chapter_drops_repeated_title_when_opening_number_has_no_chapter_label():
+    before = make_words("10 of The Hour of the Dragon by Robert E Howard")
+    notice = make_words("This is a LibriVox recording", start=6)
+    after = make_words("The Hour of the Dragon Chapter 10 A Coin from Acheron", start=12)
+
+    result = detect_boundaries(before + notice + after, [])
+
+    assert result.intro is not None
+    assert result.intro.removal_start_seconds == 0
+    assert result.intro.heading_start_seconds == next(
+        word.start for word in after if word.text.casefold().strip(".,") == "10"
+    )
 
 
 def test_later_chapter_keeps_heading_when_only_author_name_repeats():

@@ -22,6 +22,8 @@ from librivox_trimmer.boundary_detection import (
     detect_final_chapter_outro,
     detect_intro_boundary,
     front_matter_pending,
+    needs_repeated_book_title_retry,
+    remove_duplicate_first_announcement,
 )
 from mutagen.mp3 import MP3
 from librivox_trimmer.metadata import read_track
@@ -229,6 +231,22 @@ def _transcribe_intro(
         )
 
     notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap)
+    if (
+        notice is not None
+        and not is_first_chapter
+        and needs_repeated_book_title_retry(intro_words, notice)
+    ):
+        retry_start = max(0.0, notice.notice_end_seconds - 0.25)
+        retry_end = min(intro_end, notice.notice_end_seconds + 9.0)
+        if retry_end - retry_start >= 3.0:
+            report(f"Checking for the repeated book title: {title}...")
+            repeated_title_words = audio.words("intro_repeated_title", retry_start, retry_end)
+            intro_words = [
+                word for word in intro_words
+                if word.end <= retry_start or word.start >= retry_end
+            ] + repeated_title_words
+            intro_words.sort(key=lambda word: (word.start, word.end))
+            notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap)
     if notice is not None and not is_first_chapter and front_matter_pending(intro_words, notice.notice_end_seconds):
         # Whisper often drops the short chapter heading after the credit and title lines; a focused retry finds it.
         focus_start = notice.notice_end_seconds + 5.0
@@ -325,6 +343,42 @@ def _confirm_reader_credit(
         candidate_words, safety_gap_seconds=safety_gap, chapter_title=chapter_title,
     )
     if (
+        focused_words
+        and intro.reader_credit_end_seconds is not None
+        and (candidate is None or candidate.reader_credit_start_seconds is None)
+    ):
+        short_end = min(crop_end, intro.reader_credit_end_seconds + 1.5)
+        if short_end < crop_end:
+            report("Re-checking the omitted reader credit in a shorter audio window...")
+            try:
+                with TemporaryDirectory(prefix="librivox-credit-short-") as temporary:
+                    short_words = _AnalysisAudio(track_path, Path(temporary), model).words(
+                        "reader_credit_short", crop_start, short_end,
+                    )
+            except (OSError, RuntimeError, ValueError):
+                short_words = []
+            short_candidate = detect_intro_boundary(
+                [word for word in intro_words if word.end <= notice_end] + short_words,
+                safety_gap_seconds=safety_gap, chapter_title=chapter_title,
+            )
+            if (
+                short_candidate is not None
+                and short_candidate.reader_credit_start_seconds is not None
+                and abs(short_candidate.reader_credit_start_seconds - credit_start) <= 1.0
+                and short_candidate.reader_credit_end_seconds is not None
+            ):
+                short_credit_end = short_candidate.reader_credit_end_seconds
+                focused_words = (
+                    [word for word in short_words if word.end <= short_credit_end]
+                    + [word for word in focused_words if word.start >= short_credit_end]
+                )
+                candidate_words = (
+                    [word for word in intro_words if word.end <= notice_end] + focused_words
+                )
+                candidate = detect_intro_boundary(
+                    candidate_words, safety_gap_seconds=safety_gap, chapter_title=chapter_title,
+                )
+    if (
         candidate is not None
         and candidate.reader_credit_start_seconds is not None
         and abs(candidate.reader_credit_start_seconds - credit_start) <= 1.0
@@ -359,10 +413,14 @@ def _confirm_reader_credit(
         else:
             confirmed = False
         if confirmed:
-            return replace(detection, intro=replace(
+            confirmed_intro = replace(
                 intro, notice_end_seconds=credit_end, keep_time_seconds=pause,
                 reader_credit_end_seconds=credit_end,
-            ))
+            )
+            confirmed_intro = remove_duplicate_first_announcement(
+                candidate_words, confirmed_intro, retain_book_information=False,
+            )
+            return replace(detection, intro=confirmed_intro)
     notice_end = intro.notice_only_end_seconds
     if notice_end is None:
         notice_end = min(intro.notice_end_seconds or credit_start, credit_start)
