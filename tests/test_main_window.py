@@ -404,13 +404,30 @@ def test_rerun_clears_review_warning_only_when_intro_was_analyzed(window, tmp_pa
     assert ("[Review intro]" in window._track_list.item(0).text()) == bool(expected)
 
 
+def test_selected_analysis_receives_saved_catalog_metadata(window, frame_grid, monkeypatch):
+    metadata = {"title": "Catalog Book", "chapters": []}
+    window._book_metadata = metadata
+    captured = {}
+    monkeypatch.setattr(window, "_start_worker", lambda function, *_args, **_kwargs: captured.update(work=function))
+    monkeypatch.setattr(
+        main_window, "analyze_track_boundaries",
+        lambda path, **options: captured.update(path=path, metadata=options["book_metadata"]),
+    )
+
+    window._detect_selected()
+    captured["work"](lambda _message: None)
+
+    assert captured["path"] == window._tracks[0]
+    assert captured["metadata"] is metadata
+
+
 def test_detect_all_button_queues_all_tracks_with_progress(window, tmp_path, monkeypatch):
     paths = [tmp_path / "chapter01.mp3", tmp_path / "chapter02.mp3"]
     window._tracks = paths
     window._set_track_controls_enabled(True)
     captured: dict[str, object] = {}
 
-    def analyze_batch(track_paths, *, progress_callback, settings, should_cancel):
+    def analyze_batch(track_paths, *, progress_callback, settings, should_cancel, book_metadata=None):
         captured["paths"] = track_paths
         captured["settings"] = settings
         captured["should_cancel"] = should_cancel
@@ -461,7 +478,10 @@ def test_analyze_all_fetches_metadata_only_when_missing_and_url_is_saved(window,
     monkeypatch.setattr(window, "_start_worker", lambda function, *_args, **_kwargs: captured.update(work=function))
     monkeypatch.setattr(main_window, "fetch_project_metadata", lambda url: fetches.append(url) or metadata)
     monkeypatch.setattr(window, "_save_project_without_dialog", lambda: saves.append(window._book_metadata))
-    monkeypatch.setattr(main_window, "analyze_tracks_boundaries", lambda paths, **_kwargs: analyses.append(paths) or [])
+    monkeypatch.setattr(
+        main_window, "analyze_tracks_boundaries",
+        lambda paths, **options: analyses.append((paths, options["book_metadata"])) or [],
+    )
 
     window._detect_all()
     assert fetches == []
@@ -470,7 +490,7 @@ def test_analyze_all_fetches_metadata_only_when_missing_and_url_is_saved(window,
     should_fetch = not cached and has_url
     assert fetches == ([window._source_url] if should_fetch else [])
     assert saves == ([metadata] if should_fetch else [])
-    assert analyses == [window._tracks]
+    assert analyses == [(window._tracks, metadata if cached or should_fetch else None)]
     assert window._book_metadata == (metadata if cached or should_fetch else None)
 
 

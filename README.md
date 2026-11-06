@@ -19,6 +19,12 @@ Detection only suggests cuts. It never trims automatically, and exports do not
 modify source MP3s. Speech recognition can miss or misidentify words, so review
 and preview uncertain boundaries before exporting.
 
+When available, LibriVox catalog book and chapter titles help identify headings
+and book endings. Chapter reader names help confirm spoken reader credits, but
+removing a credit still requires transcription and pause checks. Chapters are
+matched by audio filename; missing or ambiguous chapter metadata falls back to
+the existing MP3-based detection.
+
 ## Windows Beta Download
 
 Download the Windows ZIP from [GitHub Releases](https://github.com/pulpcovers/LibriVox-Trimmer/releases/tag/v0.7.0),

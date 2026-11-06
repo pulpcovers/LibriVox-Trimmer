@@ -1269,6 +1269,7 @@ class MainWindow(QMainWindow):
         settings = self._project_detection
         is_first = bool(self._tracks) and path == self._tracks[0]
         is_last = bool(self._tracks) and path == self._tracks[-1]
+        book_metadata = self._book_metadata
         self._start_worker(
             lambda report_progress: analyze_track_boundaries(
                 path,
@@ -1276,6 +1277,7 @@ class MainWindow(QMainWindow):
                 settings=settings,
                 is_first_chapter=is_first,
                 is_last_chapter=is_last,
+                book_metadata=book_metadata,
             ),
             self._detection_finished,
             "Checking the speech model; downloading it if needed...",
@@ -1298,9 +1300,11 @@ class MainWindow(QMainWindow):
         self._metadata_warning = ""
         source_url = self._source_url
         needs_metadata = not self._book_metadata and bool(source_url)
+        book_metadata = self._book_metadata
         cancel = threading.Event()
 
         def analyze_all(report_progress):
+            metadata = book_metadata
             if needs_metadata and not cancel.is_set():
                 report_progress("Fetching audiobook metadata from LibriVox...")
                 try:
@@ -1320,6 +1324,7 @@ class MainWindow(QMainWindow):
             return analyze_tracks_boundaries(
                 track_paths, progress_callback=report_progress,
                 settings=settings, should_cancel=cancel.is_set,
+                book_metadata=metadata,
             )
 
         self._start_worker(

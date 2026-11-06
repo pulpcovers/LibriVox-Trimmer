@@ -1,7 +1,19 @@
 from copy import deepcopy
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from mutagen.mp3 import MP3
+
+
+def catalog_chapter(path: Path, book_metadata: dict | None) -> dict:
+    matches = [
+        chapter for chapter in (book_metadata or {}).get("chapters", [])
+        if any(
+            Path(unquote(urlparse(url).path)).name.casefold() == path.name.casefold()
+            for url in chapter.get("audio_urls", [])
+        )
+    ]
+    return matches[0] if len(matches) == 1 else {}
 
 
 def read_track(path: Path) -> tuple[float, str, str]:

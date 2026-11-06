@@ -23,10 +23,11 @@ from librivox_trimmer.boundary_detection import (
     detect_intro_boundary,
     front_matter_pending,
     needs_repeated_book_title_retry,
+    match_reader_credit_end,
     remove_duplicate_first_announcement,
 )
 from mutagen.mp3 import MP3
-from librivox_trimmer.metadata import read_track
+from librivox_trimmer.metadata import catalog_chapter, read_track
 from librivox_trimmer.model_manager import load_whisper_model
 from librivox_trimmer.transcription import detect_speech_regions, transcribe_words, uncovered_speech
 from librivox_trimmer.settings import DetectionSettings
@@ -319,6 +320,7 @@ def _transcribe_outro(
 
 def _confirm_reader_credit(
     track_path, detection, intro_words, duration, model, safety_gap, report, *, chapter_title="",
+    reader_names=(),
 ):
     intro = detection.intro
     if intro is None or intro.reader_credit_start_seconds is None:
@@ -341,6 +343,7 @@ def _confirm_reader_credit(
     )
     candidate = detect_intro_boundary(
         candidate_words, safety_gap_seconds=safety_gap, chapter_title=chapter_title,
+        reader_names=reader_names,
     )
     if (
         focused_words
@@ -360,6 +363,7 @@ def _confirm_reader_credit(
             short_candidate = detect_intro_boundary(
                 [word for word in intro_words if word.end <= notice_end] + short_words,
                 safety_gap_seconds=safety_gap, chapter_title=chapter_title,
+                reader_names=reader_names,
             )
             if (
                 short_candidate is not None
@@ -377,12 +381,18 @@ def _confirm_reader_credit(
                 )
                 candidate = detect_intro_boundary(
                     candidate_words, safety_gap_seconds=safety_gap, chapter_title=chapter_title,
+                    reader_names=reader_names,
                 )
     if (
         candidate is not None
         and candidate.reader_credit_start_seconds is not None
         and abs(candidate.reader_credit_start_seconds - credit_start) <= 1.0
         and candidate.reader_credit_end_seconds is not None
+        and (
+            not reader_names or candidate.reader_credit_end_seconds == match_reader_credit_end(
+                candidate_words, candidate.reader_credit_prefix_end_seconds, reader_names,
+            )
+        )
     ):
         credit_end = candidate.reader_credit_end_seconds
         cue_end = candidate.reader_credit_prefix_end_seconds
@@ -532,14 +542,18 @@ def _analyze_track(
     settings: DetectionSettings | None = None,
     is_first_chapter: bool = False,
     is_last_chapter: bool = False,
+    book_metadata: dict | None = None,
 ) -> BoundaryDetection:
     settings = settings or DetectionSettings()
     settings.validate()
     duration, title, _artist = read_track(track_path)
+    chapter = catalog_chapter(track_path, book_metadata)
+    title = chapter.get("title") or title
+    reader_names = [reader["name"] for reader in chapter.get("readers", []) if reader.get("name")]
     if duration <= 0:
         raise ValueError("Cannot analyze a track with no duration.")
-    book_title = ""
-    if is_last_chapter:
+    book_title = (book_metadata or {}).get("title") or ""
+    if is_last_chapter and not book_title:
         try:
             audio_metadata = MP3(track_path)
             book_title = str(audio_metadata.tags.get("TALB", "")) if audio_metadata.tags else ""
@@ -586,10 +600,12 @@ def _analyze_track(
         outro_transcripts=outro_retries,
         duration_seconds=duration,
         chapter_title=title,
+        reader_names=reader_names,
     )
     detection = _confirm_reader_credit(
         track_path, detection, intro_words, duration, model,
         settings.intro_safety_gap_seconds, report, chapter_title=title,
+        reader_names=reader_names,
     )
     detection = _refine_intro(
         track_path, detection, intro_words, settings.intro_safety_gap_seconds, report, title,
@@ -621,6 +637,7 @@ def analyze_track_boundaries(
     settings: DetectionSettings | None = None,
     is_first_chapter: bool = False,
     is_last_chapter: bool = False,
+    book_metadata: dict | None = None,
 ) -> BoundaryDetection:
     settings = settings or DetectionSettings()
     # Transcripts and silences are remembered per track, so re-running after a logic change skips Whisper.
@@ -628,6 +645,7 @@ def analyze_track_boundaries(
         return _analyze_track(
             track_path, model=model, progress_callback=progress_callback, settings=settings,
             is_first_chapter=is_first_chapter, is_last_chapter=is_last_chapter,
+            book_metadata=book_metadata,
         )
 
 
@@ -637,6 +655,7 @@ def analyze_tracks_boundaries(
     progress_callback: Callable[[str | TrackBoundaryResult], None] | None = None,
     settings: DetectionSettings | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    book_metadata: dict | None = None,
 ) -> list[TrackBoundaryResult]:
     """Analyse tracks in order; on cancel, return only the chapters that finished."""
     def cancelled() -> bool:
@@ -651,6 +670,7 @@ def analyze_tracks_boundaries(
             _duration, title, _artist = read_track(path)
         except Exception:
             title = path.name
+        title = catalog_chapter(path, book_metadata).get("title") or title
         prefix = f"Chapter {index} of {total}: {title}"
         if progress_callback is not None:
             progress_callback(f"{prefix} (checking speech model)...")
@@ -670,6 +690,7 @@ def analyze_tracks_boundaries(
             }
             result = analyze_track_boundaries(
                 path, progress_callback=report_progress, settings=settings, **options,
+                book_metadata=book_metadata,
             )
         except AnalysisCancelled:
             break

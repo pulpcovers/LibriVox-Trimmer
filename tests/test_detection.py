@@ -8,6 +8,18 @@ from librivox_trimmer.settings import DetectionSettings
 from librivox_trimmer.boundary_detection import BoundaryDetection, BoundarySuggestion
 
 
+def test_catalog_chapter_matches_filename_not_list_position():
+    from librivox_trimmer.metadata import catalog_chapter
+
+    chapter = {"title": "The River Bank", "audio_urls": ["https://example.org/Chapter%2001.mp3"]}
+    metadata = {"chapters": [{"title": "Other", "audio_urls": []}, chapter]}
+
+    assert catalog_chapter(Path("chapter 01.mp3"), metadata) is chapter
+    assert catalog_chapter(Path("missing.mp3"), metadata) == {}
+    assert catalog_chapter(Path("chapter 01.mp3"), None) == {}
+    assert catalog_chapter(Path("chapter 01.mp3"), {"chapters": [chapter, chapter]}) == {}
+
+
 @pytest.fixture(autouse=True)
 def mock_intro_resume_audio(monkeypatch):
     monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: None)
@@ -115,7 +127,7 @@ def test_omitted_credit_gets_one_short_retry_without_losing_recovered_heading(tm
         assert "protect narration" in result.intro_review_reason
 
 
-def _credit_case(monkeypatch, credit_words, tail_words, pauses, resume, chapter_title=""):
+def _credit_case(monkeypatch, credit_words, tail_words, pauses, resume, chapter_title="", reader_names=()):
     notice = _timed("This LibriVox recording is in the public domain", 5, 0.4)
     words = notice + credit_words + tail_words
     monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
@@ -125,10 +137,11 @@ def _credit_case(monkeypatch, credit_words, tail_words, pauses, resume, chapter_
         detection, "reader_credit_pause",
         lambda _path, _cue, _end, minimum=0.75, not_before=None: pauses.get(minimum),
     )
-    original = detection.detect_boundaries(words, [], chapter_title=chapter_title)
+    original = detection.detect_boundaries(words, [], chapter_title=chapter_title, reader_names=reader_names)
     return detection._confirm_reader_credit(
         Path("chapter.mp3"), original, words, 100, object(), 0.6, lambda _message: None,
         chapter_title=chapter_title,
+        reader_names=reader_names,
     )
 
 
@@ -147,6 +160,71 @@ def test_credit_followed_by_a_short_aligned_pause_is_confirmed(monkeypatch):
     assert result.intro.keep_time_seconds == 10.95
     assert result.intro.reader_credit_end_seconds == pytest.approx(10.4)
     assert result.intro_review_reason is None
+
+
+@pytest.mark.parametrize("reader_name", ["Nigel Fisher", "Other Reader"])
+@pytest.mark.parametrize("pause_confirmed", [True, False])
+def test_catalog_reader_requires_spoken_name_and_confirmed_pause(monkeypatch, reader_name, pause_confirmed):
+    credit = _FISHER[:3] + [TimedWord("Fisher", 10.0, 10.4)]
+    result = _credit_case(
+        monkeypatch, credit, _timed("Our reception was splendid", 10.8, 0.4),
+        pauses={0.75: (10.5, 10.75)} if pause_confirmed else {},
+        resume=10.6 if pause_confirmed else None,
+        reader_names=[reader_name],
+    )
+
+    if reader_name == "Nigel Fisher" and pause_confirmed:
+        assert result.intro.reader_credit_end_seconds == 10.4
+        assert result.intro.keep_time_seconds == 10.6
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds <= 8.7
+        assert "protect narration" in result.intro_review_reason
+
+
+def test_catalog_reader_name_without_notice_does_not_create_a_cut():
+    words = _timed("Read by Nigel Fisher The story begins", 0, 0.3)
+
+    result = detection.detect_boundaries(words, [], reader_names=["Nigel Fisher"])
+
+    assert result.intro is None
+
+
+@pytest.mark.parametrize("metadata_case", ["matched", "unmatched", "missing"])
+def test_catalog_titles_and_matched_readers_reach_detection(tmp_path, monkeypatch, metadata_case):
+    from types import SimpleNamespace
+
+    metadata = {
+        "title": "Catalog Book",
+        "chapters": [{
+            "title": "The River Bank", "audio_urls": ["https://example.org/chapter.mp3"],
+            "readers": [{"name": "Nigel Fisher"}],
+        }],
+    }
+    if metadata_case == "unmatched":
+        metadata["chapters"][0]["audio_urls"] = ["https://example.org/other.mp3"]
+    elif metadata_case == "missing":
+        metadata = None
+    monkeypatch.setattr(detection, "read_track", lambda _path: (600, "Embedded Chapter", "Embedded Reader"))
+    monkeypatch.setattr(detection, "MP3", lambda _path: SimpleNamespace(tags={"TALB": "Embedded Book"}))
+    monkeypatch.setattr(detection, "_transcribe_intro", lambda *_args, **_kwargs: ([], []))
+    monkeypatch.setattr(detection, "_transcribe_outro", lambda *_args, **_kwargs: ([], [], []))
+    captured = {}
+
+    def detect(_intro, _outro, **options):
+        captured.update(options)
+        return BoundaryDetection(None, None)
+
+    monkeypatch.setattr(detection, "detect_boundaries", detect)
+
+    detection._analyze_track(
+        tmp_path / "chapter.mp3", model=object(), settings=DetectionSettings(refine_outro=False),
+        is_last_chapter=True, book_metadata=metadata,
+    )
+
+    assert captured["chapter_title"] == ("The River Bank" if metadata_case == "matched" else "Embedded Chapter")
+    assert captured["book_title"] == ("Embedded Book" if metadata_case == "missing" else "Catalog Book")
+    assert captured["reader_names"] == (["Nigel Fisher"] if metadata_case == "matched" else [])
 
 
 @pytest.mark.parametrize("punctuated", [True, False])
@@ -565,8 +643,10 @@ def test_batch_detection_continues_after_a_chapter_failure(tmp_path, monkeypatch
     )
     calls: list[Path] = []
     progress: list[str | detection.TrackBoundaryResult] = []
+    metadata = {"title": "Catalog Book", "chapters": []}
 
-    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter):
+    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter, book_metadata=None):
+        assert book_metadata is metadata
         calls.append(path)
         assert is_first_chapter == (path == paths[0])
         assert is_last_chapter == (path == paths[-1])
@@ -577,7 +657,7 @@ def test_batch_detection_continues_after_a_chapter_failure(tmp_path, monkeypatch
 
     monkeypatch.setattr(detection, "analyze_track_boundaries", analyze)
 
-    results = detection.analyze_tracks_boundaries(paths, progress_callback=progress.append)
+    results = detection.analyze_tracks_boundaries(paths, progress_callback=progress.append, book_metadata=metadata)
 
     assert calls == paths
     assert [result.error for result in results] == [None, "transcription failed", None]
@@ -596,7 +676,7 @@ def test_batch_progress_names_the_chapter_only_once(tmp_path, monkeypatch):
     path = tmp_path / "chapter01.mp3"
     monkeypatch.setattr(detection, "read_track", lambda _path: (600, "The Long Title", "Reader"))
 
-    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter):
+    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter, book_metadata=None):
         progress_callback("Analyzing chapter: The Long Title (outro)...")
         progress_callback("Checking first 10 seconds: The Long Title...")
         return detection.BoundaryDetection(intro=None, outro=None)
@@ -619,7 +699,7 @@ def test_cancelling_track_batch_keeps_finished_chapters_only(tmp_path, monkeypat
     cancel = {"requested": False}
     calls: list[Path] = []
 
-    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter):
+    def analyze(path, *, progress_callback, settings, is_first_chapter, is_last_chapter, book_metadata=None):
         calls.append(path)
         if path == paths[1]:
             cancel["requested"] = True
