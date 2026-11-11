@@ -4,7 +4,9 @@ A Windows-first desktop app for reviewing and trimming LibriVox audiobook
 chapters. It analyses chapter openings and endings, suggests cut points, and
 exports approved MP3 intervals without re-encoding.
 
-Current version: 0.7.0 (beta)
+Latest Windows release: 0.7.0 (beta). The source includes newer changes that are
+not yet included in that download: narrator hotwords, fresh transcription on
+every analysis, and delayed waveform recentering.
 
 ## Highlights
 
@@ -143,8 +145,11 @@ project. Re-running analysis updates warnings for the sections that were checked
 Check **Mark reviewed** beside the selected chapter's Analyse button to acknowledge
 its warnings and clear its highlight. This autosaves without changing the cuts;
 unchecking it restores the warnings. New analysis results reset the acknowledgement.
-On the first loaded track, the book and chapter announcement is kept. On later
-tracks the notice, reader credit and repeated announcement are removed. When the
+On the first loaded track, unique book and chapter information is kept; an
+opening announcement may be removed when its repetition is confirmed after the
+notice. This includes unnumbered headings such as Foreword, Introduction and
+Preface. On later tracks, the app attempts to remove the notice, reader credit
+and redundant opening information while retaining the chapter heading. When the
 app cannot confirm where a credit ends, it keeps the audio and marks the chapter
 **Review intro** rather than risk cutting the chapter title or narration. Check
 these previews and adjust the cut manually if needed.
@@ -174,6 +179,11 @@ click or drag on the waveform to place it. The removed side is shaded red. Cuts
 snap to MP3 frame boundaries (about 26 ms for LibriVox 64 kbps files), so the
 line shows exactly where the exported file will cut. With the waveform focused,
 the arrow keys move the cut one frame; hold Shift to move ten frames.
+
+After a cut is moved, the waveform recenters after one second without another
+edit. Dragging defers recentering until the mouse is released. The current
+waveform stays visible while the new window loads; near a file's start or end,
+the view stays within the available audio.
 
 Exports use MP3 stream copy and restore ID3 tags. MP3 frame boundaries limit cut
 precision, so listen to uncertain transitions. The app recognizes spoken endings
@@ -216,10 +226,11 @@ unusual names and chapters where the expected name is not spoken. Rerunning anal
 replaces the current suggestions, so record the baseline before running the hinted case.
 
 Hinted credit retries are freshly transcribed too. The progress message names
-the hotwords when used. Hints may invent
-or bias words; the existing credit-cue and pause checks still apply, and real-audio
-accuracy has not yet been established. This experiment is available in the source
-branch, not the published 0.7.0 beta executable.
+the hotwords when used. Hints may invent or bias words; the existing credit-cue
+and pause checks still apply. A development comparison across 13 narrators found
+fewer intro warnings with hints enabled, but this is not a measured accuracy rate
+or a guarantee of safe cuts. This experiment is available in the current source,
+not the published 0.7.0 beta executable.
 
 ## Projects
 

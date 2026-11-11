@@ -104,6 +104,10 @@ class MainWindow(QMainWindow):
         self._frame_grids: dict[Path, FrameGrid | None] = {}
         self._waveform_request = 0
         self._waveform_workers: set[Worker] = set()
+        self._waveform_recenter_timer = QTimer(self)
+        self._waveform_recenter_timer.setSingleShot(True)
+        self._waveform_recenter_timer.setInterval(1000)
+        self._waveform_recenter_timer.timeout.connect(self._recenter_waveform)
         self._settings_error = ""
         try:
             self._settings = load_settings()
@@ -124,6 +128,10 @@ class MainWindow(QMainWindow):
         self._playback_timer.timeout.connect(self._check_preview_end)
 
         self._build_ui()
+
+    def closeEvent(self, event) -> None:
+        self._waveform_recenter_timer.stop()
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         self._build_project_menu()
@@ -294,11 +302,13 @@ class MainWindow(QMainWindow):
         editor.addLayout(waveform_row)
         self._waveform = WaveformView()
         self._waveform.cut_changed.connect(self._apply_waveform_cut)
+        self._waveform.drag_started.connect(self._waveform_recenter_timer.stop)
+        self._waveform.drag_finished.connect(self._schedule_waveform_recenter)
         editor.addWidget(self._waveform)
         editor.addWidget(self._waveform_hint)
         for _label, field, _starts_kept in self._cut_fields:
             field.installEventFilter(self)
-            field.valueChanged.connect(self._sync_waveform_cut)
+            field.valueChanged.connect(self._cut_field_changed)
 
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
@@ -1018,6 +1028,8 @@ class MainWindow(QMainWindow):
         return Path(item.data(Qt.ItemDataRole.UserRole)) if item is not None else None
 
     def _select_track(self, row: int) -> None:
+        self._waveform_recenter_timer.stop()
+        self._waveform_request += 1
         if row < 0 or row >= len(self._tracks):
             self._set_track_controls_enabled(False)
             return
@@ -1068,10 +1080,7 @@ class MainWindow(QMainWindow):
             return value, starts_kept
         return grid.exported_cut(value, starts_kept_audio=starts_kept), starts_kept
 
-    def _refresh_waveform(self, *_args) -> None:
-        path = self._selected_path()
-        if path is None:
-            return
+    def _waveform_bounds(self) -> tuple[float, float]:
         field, _starts_kept = self._selected_cut_field()
         duration = self._keep_end.maximum()
         center = field.value()
@@ -1079,6 +1088,36 @@ class MainWindow(QMainWindow):
             center = self._keep_end.value()
         start = max(0.0, min(center - 2.5, duration - 5.0))
         end = min(duration, start + 5.0)
+        return start, end
+
+    def _schedule_waveform_recenter(self) -> None:
+        if self._selected_path() is not None and not self._waveform.is_dragging:
+            self._waveform_recenter_timer.start()
+
+    def _recenter_waveform(self) -> None:
+        self._waveform_recenter_timer.stop()
+        path = self._selected_path()
+        if path is None or self._waveform.is_dragging or self._cut_marker(path)[0] is None:
+            return
+        start, end = self._waveform_bounds()
+        window = self._waveform.window_range
+        if end <= start or (window is not None and abs(window[0] - start) <= 0.001):
+            return
+        self._refresh_waveform(preserve_current=True)
+
+    def _cut_field_changed(self, *_args) -> None:
+        field = self.sender()
+        if field is not self._selected_cut_field()[0]:
+            return
+        self._waveform_request += 1
+        self._sync_waveform_cut()
+
+    def _refresh_waveform(self, *_args, preserve_current: bool = False) -> None:
+        self._waveform_recenter_timer.stop()
+        path = self._selected_path()
+        if path is None:
+            return
+        start, end = self._waveform_bounds()
         if end <= start:
             return
         self._waveform_request += 1
@@ -1088,7 +1127,8 @@ class MainWindow(QMainWindow):
         request = self._waveform_request
         key = path.resolve()
         known_grid = key in self._frame_grids
-        self._waveform.set_message("Loading waveform...")
+        if not preserve_current or self._waveform.window_range is None:
+            self._waveform.set_message("Loading waveform...")
 
         def load():
             grid = self._frame_grids.get(key) if known_grid else read_frame_grid(path)
@@ -1107,6 +1147,8 @@ class MainWindow(QMainWindow):
         path = self._selected_path()
         if request != self._waveform_request or path is None or path.resolve() != key:
             return
+        if self._waveform.is_dragging:
+            return
         self._waveform.set_waveform(window, grid)
         marker, starts_kept = self._cut_marker(path)
         self._waveform.set_cut(marker, starts_kept_audio=starts_kept)
@@ -1121,11 +1163,9 @@ class MainWindow(QMainWindow):
         if path is None:
             return
         marker, starts_kept = self._cut_marker(path)
-        window = self._waveform.window_range
-        if marker is not None and window is not None and not window[0] <= marker <= window[1]:
-            self._refresh_waveform()
-            return
         self._waveform.set_cut(marker, starts_kept_audio=starts_kept)
+        if marker is not None:
+            self._schedule_waveform_recenter()
 
     def _apply_waveform_cut(self, boundary: float) -> None:
         path = self._selected_path()

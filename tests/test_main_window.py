@@ -1038,6 +1038,103 @@ def test_end_waveform_does_not_reload_when_marker_is_just_past_audio_end(
     assert window._waveform.cut == frame_grid.exported_cut(100.0, starts_kept_audio=False)
 
 
+def test_waveform_recenters_once_after_editing_stops_and_keeps_old_window_visible(window, frame_grid, monkeypatch):
+    from array import array
+    from PySide6.QtTest import QTest
+    from librivox_trimmer.waveform import WaveformWindow
+
+    path = window._tracks[0]
+    path.write_bytes(b"placeholder")
+    window._waveform_field.setCurrentIndex(1)
+    window._waveform.set_waveform(WaveformWindow(5.0, 8000, array("h", [0]) * 40000), frame_grid)
+    assert window._waveform_recenter_timer.interval() == 1000
+    window._waveform_recenter_timer.setInterval(10)
+    workers = []
+    monkeypatch.setattr(window._thread_pool, "start", workers.append)
+
+    window._keep_start.setValue(8.0)
+    window._keep_start.setValue(9.0)
+
+    assert workers == []
+    assert window._waveform_recenter_timer.isActive()
+    assert window._waveform.window_range == (5.0, 10.0)
+    QTest.qWait(40)
+
+    assert len(workers) == 1
+    assert window._waveform.window_range == (5.0, 10.0)
+    assert not window._waveform_recenter_timer.isActive()
+    workers[0].run()
+    assert window._waveform.window_range == pytest.approx((6.5, 11.5))
+
+
+def test_waveform_recenter_waits_for_drag_release_and_cancels_on_field_switch(window, frame_grid):
+    window._waveform_field.setCurrentIndex(1)
+    window._waveform._dragging = True
+    window._waveform.drag_started.emit()
+    window._keep_start.setValue(9.0)
+
+    assert not window._waveform_recenter_timer.isActive()
+
+    window._waveform._dragging = False
+    window._waveform.drag_finished.emit()
+    assert window._waveform_recenter_timer.isActive()
+    window._waveform_field.setCurrentIndex(2)
+    assert not window._waveform_recenter_timer.isActive()
+
+
+@pytest.mark.parametrize("field_index,value,window_start,sample_count", [(0, 0, 0, 40000), (2, 120, 115, 39960)])
+def test_waveform_recenter_skips_unchanged_window_at_file_edges(window, frame_grid, monkeypatch, field_index, value, window_start, sample_count):
+    from array import array
+    from librivox_trimmer.waveform import WaveformWindow
+
+    window._waveform_field.setCurrentIndex(field_index)
+    window._selected_cut_field()[0].setValue(value)
+    window._waveform.set_waveform(WaveformWindow(window_start, 8000, array("h", [0]) * sample_count), frame_grid)
+    monkeypatch.setattr(window, "_refresh_waveform", lambda **_kwargs: pytest.fail("Already centered at the file edge"))
+
+    window._recenter_waveform()
+
+
+def test_waveform_recenter_cancels_when_chapter_changes(window, add_chapters):
+    add_chapters("one.mp3", "two.mp3")
+    window._track_list.setCurrentRow(0)
+    window._keep_start.setValue(1)
+    assert window._waveform_recenter_timer.isActive()
+
+    window._track_list.setCurrentRow(1)
+
+    assert not window._waveform_recenter_timer.isActive()
+
+
+def test_waveform_recenter_cancels_when_window_closes(window, frame_grid):
+    assert window._waveform_recenter_timer.isActive()
+
+    window.close()
+
+    assert not window._waveform_recenter_timer.isActive()
+
+
+@pytest.mark.parametrize("new_drag", [False, True])
+def test_background_waveform_does_not_replace_new_edit_or_active_drag(window, frame_grid, new_drag):
+    from array import array
+    from librivox_trimmer.waveform import WaveformWindow
+
+    old_window = WaveformWindow(5.0, 8000, array("h", [0]) * 40000)
+    new_window = WaveformWindow(7.5, 8000, array("h", [0]) * 40000)
+    window._waveform.set_waveform(old_window, frame_grid)
+    request = window._waveform_request
+    if new_drag:
+        window._waveform._dragging = True
+        window._waveform.drag_started.emit()
+    else:
+        window._keep_start.setValue(9)
+    worker = object()
+
+    window._waveform_loaded(worker, (request, window._tracks[0].resolve(), frame_grid, new_window))
+
+    assert window._waveform.window_range == (5.0, 10.0)
+
+
 def test_waveform_refuses_cuts_out_of_order(window, frame_grid):
     grid = frame_grid
     window._waveform_field.setCurrentIndex(0)
