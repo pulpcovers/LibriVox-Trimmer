@@ -20,11 +20,12 @@ class DetectionSettings:
     outro_window_seconds: float = 30.0
     intro_safety_gap_seconds: float = 0.6
     refine_outro: bool = True
+    narrator_credit_hotwords: bool = False
 
     def validate(self) -> None:
         if self.model_size not in MODEL_CHOICES:
             raise ValueError("Unsupported speech model.")
-        for value in (self.detect_intro, self.detect_outro, self.refine_outro):
+        for value in (self.detect_intro, self.detect_outro, self.refine_outro, self.narrator_credit_hotwords):
             if type(value) is not bool:
                 raise ValueError("Detection switches must be true or false.")
         if not self.detect_intro and not self.detect_outro:

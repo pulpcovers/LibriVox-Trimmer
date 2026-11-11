@@ -9,6 +9,8 @@ class WaveformView(QWidget):
     """Short waveform with a frame-snapped cut marker that can be clicked, dragged, or nudged."""
 
     cut_changed = Signal(float)
+    drag_started = Signal()
+    drag_finished = Signal()
 
     RULER_HEIGHT = 18
     MARGIN = 6
@@ -27,11 +29,16 @@ class WaveformView(QWidget):
         self._starts_kept_audio = True
         self._playhead: float | None = None
         self._message = "Select a chapter to see its waveform"
+        self._dragging = False
 
     def sizeHint(self):
         size = super().sizeHint()
         size.setHeight(120)
         return size
+
+    @property
+    def is_dragging(self) -> bool:
+        return self._dragging
 
     @property
     def window_range(self) -> tuple[float, float] | None:
@@ -42,6 +49,7 @@ class WaveformView(QWidget):
         return self._cut
 
     def set_message(self, message: str) -> None:
+        self._dragging = False
         self._window = None
         self._peaks = []
         self._message = message
@@ -105,6 +113,8 @@ class WaveformView(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._window is not None:
+            self._dragging = True
+            self.drag_started.emit()
             self.setFocus()
             self._choose(self.time_at(event.position().x()))
         super().mousePressEvent(event)
@@ -113,6 +123,12 @@ class WaveformView(QWidget):
         if event.buttons() & Qt.MouseButton.LeftButton and self._window is not None:
             self._choose(self.time_at(event.position().x()))
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            self.drag_finished.emit()
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:
         if self._window is None or event.key() not in (Qt.Key.Key_Left, Qt.Key.Key_Right):

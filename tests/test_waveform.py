@@ -108,7 +108,11 @@ def test_waveform_view_maps_clicks_to_snapped_times_and_nudges_by_frames():
 
     chosen = []
     view.cut_changed.connect(chosen.append)
+    dragging = []
+    view.drag_started.connect(lambda: dragging.append(view.is_dragging))
+    view.drag_finished.connect(lambda: dragging.append(view.is_dragging))
     QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=rect.center().toPoint())
+    assert dragging == [True, False]
     assert chosen[-1] == pytest.approx(GRID.nearest_boundary(view.time_at(rect.center().x())))
 
     QTest.keyClick(view, Qt.Key.Key_Right)

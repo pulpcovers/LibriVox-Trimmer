@@ -64,6 +64,12 @@ class SettingsDialog(QDialog):
         advanced_form.addRow("Outro search window", self._outro_window)
         advanced_form.addRow("Extra intro removal margin", self._intro_margin)
         advanced_form.addRow(self._refinement)
+        self._credit_hotwords = QCheckBox("Narrator credit hotwords (experimental)")
+        self._credit_hotwords.setToolTip(
+            "Use catalog narrator names as vocabulary hints for focused reader-credit retries only. "
+            "Hints may bias transcription; preview credit boundaries before exporting."
+        )
+        advanced_form.addRow(self._credit_hotwords)
         tabs.addTab(advanced, "Advanced")
 
         buttons = QDialogButtonBox(
@@ -121,6 +127,7 @@ class SettingsDialog(QDialog):
         self._outro_window.setValue(detection.outro_window_seconds)
         self._intro_margin.setValue(detection.intro_safety_gap_seconds)
         self._refinement.setChecked(detection.refine_outro)
+        self._credit_hotwords.setChecked(detection.narrator_credit_hotwords)
 
     def _save(self) -> None:
         settings = AppSettings(
@@ -136,6 +143,7 @@ class SettingsDialog(QDialog):
                 outro_window_seconds=self._outro_window.value(),
                 intro_safety_gap_seconds=self._intro_margin.value(),
                 refine_outro=self._refinement.isChecked(),
+                narrator_credit_hotwords=self._credit_hotwords.isChecked(),
             ),
         )
         try:

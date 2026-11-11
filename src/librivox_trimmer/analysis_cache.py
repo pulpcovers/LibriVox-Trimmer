@@ -1,7 +1,4 @@
-"""Remembers the slow, deterministic audio work (transcripts, speech regions, silences) per track.
-
-Re-analysing after a logic change then reuses the recorded audio results instead of running Whisper again.
-"""
+"""Cache audio measurements on disk and support in-memory transcription snapshots for replay."""
 
 import hashlib
 import importlib.metadata
@@ -105,6 +102,7 @@ class AnalysisCache:
         try:
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if loaded.get("version") == FORMAT_VERSION and loaded.get("asr") == _asr_identity():
+                loaded.pop("transcripts", None)
                 data = loaded
         except (OSError, ValueError):
             pass
@@ -160,7 +158,7 @@ class AnalysisCache:
                 "w", encoding="utf-8", dir=self._path.parent, suffix=".tmp", delete=False,
             ) as target:
                 temporary = Path(target.name)
-                json.dump(self._data, target)
+                json.dump({key: value for key, value in self._data.items() if key != "transcripts"}, target)
             os.replace(temporary, self._path)
             self._dirty = False
         except OSError:

@@ -174,6 +174,25 @@ def refine_cut_before_heading(source_path: Path, heading_start: float) -> float 
     return None
 
 
+def refine_short_pause_before_heading(
+    source_path: Path, preceding_speech_end: float, heading_start: float,
+) -> float | None:
+    if preceding_speech_end < 0 or heading_start <= preceding_speech_end:
+        return None
+    silences = _detect_silences(
+        source_path, max(0.0, preceding_speech_end - 0.1), heading_start + 0.35, 0.15,
+    ) or []
+    for start, end in reversed(silences):
+        if (
+            start >= preceding_speech_end - 0.05
+            and start < heading_start
+            and end - start >= 0.15
+            and abs(end - heading_start) <= 0.25
+        ):
+            return (start + end) / 2
+    return None
+
+
 def refine_announcement_outro_cut(
     source_path: Path, marker_start: float, *, tail_seconds: float = 1.0,
 ) -> float | None:
