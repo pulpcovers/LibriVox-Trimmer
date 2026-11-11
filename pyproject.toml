@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "librivox-audiobook-trimmer"
-version = "0.7.0"
+version = "0.8.0"
 description = "Review and trim LibriVox audiobook chapter MP3 files"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+dev = ["pytest>=8,<9", "tomli>=2; python_version < '3.11'"]
+build = ["pyinstaller==6.22.3"]
 
 [project.scripts]
 librivox-trimmer = "librivox_trimmer.app:main"

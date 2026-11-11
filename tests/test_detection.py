@@ -20,6 +20,95 @@ def test_catalog_chapter_matches_filename_not_list_position():
     assert catalog_chapter(Path("chapter 01.mp3"), {"chapters": [chapter, chapter]}) == {}
 
 
+@pytest.mark.parametrize("title,expected", [
+    ("1-4. Ned Land", "Ned Land"),
+    ("01 - The Gray-Cloaked Stranger", "The Gray-Cloaked Stranger"),
+    ("IV. The Escape", "The Escape"),
+    ("Chapter IV - The Escape", "The Escape"),
+    ("Ch. 02 Concerning the Colour of Men's Hair", "Concerning the Colour of Men's Hair"),
+    ("Ch 2: The Escape", "The Escape"),
+    ("Part I, Chapter IV: Ned Land", "Ned Land"),
+    ("Chapter twenty-one: The Return", "The Return"),
+    ("Chapter 11", "Chapter 11"),
+    ("Foreword", "Foreword"),
+    ("20,000 Leagues Under the Sea", "20,000 Leagues Under the Sea"),
+    ("1984: A Novel", "1984: A Novel"),
+    ("1-2-3 Go!", "1-2-3 Go!"),
+    ("1 \u2013 Red Nails (Chapter 1)", "Red Nails"),
+    ("Red Nails (Chapter I)", "Red Nails"),
+    ("04 - The Escape (A Novel)", "The Escape (A Novel)"),
+    ("  Return   of Lang-Sword  ", "Return of Lang-Sword"),
+])
+def test_chapter_title_normalization_preserves_real_title_content(title, expected):
+    from librivox_trimmer.metadata import normalize_chapter_title
+
+    assert normalize_chapter_title(title) == expected
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("Gregg Margarite (1957-2012)", "Gregg Margarite"),
+    ("Andy Minter (1934\u20132017)", "Andy Minter"),
+    ("Tom Hirsch (1947-2022)", "Tom Hirsch"),
+    ("Reader (b. 1950)", "Reader"),
+    ("Reader (1950-)", "Reader"),
+    ("Thomas A. Copeland", "Thomas A Copeland"),
+    ("J.R.R. Tolkien", "J R R Tolkien"),
+    ("  Mark F.  Smith  ", "Mark F Smith"),
+    ("Anne-Marie O\u2019Neill", "Anne-Marie O'Neill"),
+    ("Reader (Pseudonym)", "Reader (Pseudonym)"),
+    ("Dr. A. Reader Jr.", "Dr. A Reader Jr."),
+])
+def test_narrator_name_normalization_removes_only_catalog_annotations(name, expected):
+    from librivox_trimmer.metadata import normalize_narrator_name
+
+    assert normalize_narrator_name(name) == expected
+
+
+@pytest.mark.parametrize("hotwords_enabled", [True, False])
+def test_normalized_catalog_names_reach_credit_matching_and_hints_without_mutating_metadata(tmp_path, monkeypatch, hotwords_enabled):
+    from copy import deepcopy
+
+    metadata = {
+        "title": "Book", "authors": ["Author"],
+        "chapters": [{
+            "title": "1-4. Ned Land", "audio_urls": ["https://example.org/chapter.mp3"],
+            "readers": [
+                {"name": "Gregg Margarite (1957-2012)"},
+                {"name": "Gregg Margarite"}, {"name": "Thomas A. Copeland"},
+                {"name": "   "},
+            ],
+        }],
+    }
+    before = deepcopy(metadata)
+    captured = {}
+    monkeypatch.setattr(detection, "read_track", lambda _path: (600, "Original MP3 title", "Original Author"))
+    monkeypatch.setattr(detection, "_transcribe_intro", lambda *_args, **_kwargs: ([], []))
+
+    def boundaries(_intro, _outro, **options):
+        captured["matching"] = options["reader_names"]
+        captured["title"] = options["chapter_title"]
+        return BoundaryDetection(None, None)
+
+    def confirm(_path, result, *_args, **options):
+        captured["credit"] = options["reader_names"]
+        captured["hints_enabled"] = options["narrator_credit_hotwords"]
+        return result
+
+    monkeypatch.setattr(detection, "detect_boundaries", boundaries)
+    monkeypatch.setattr(detection, "_confirm_reader_credit", confirm)
+
+    detection._analyze_track(
+        tmp_path / "chapter.mp3", model=object(), book_metadata=metadata,
+        settings=DetectionSettings(detect_outro=False, narrator_credit_hotwords=hotwords_enabled),
+    )
+
+    expected_names = ["Gregg Margarite", "Thomas A Copeland"]
+    assert captured["matching"] == captured["credit"] == expected_names
+    assert captured["hints_enabled"] is hotwords_enabled
+    assert captured["title"] == "1-4. Ned Land"
+    assert metadata == before
+
+
 @pytest.fixture(autouse=True)
 def mock_intro_resume_audio(monkeypatch):
     monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: None)
@@ -398,6 +487,35 @@ def test_missing_unnumbered_heading_retry_requires_matching_spoken_heading(tmp_p
     assert any(name == "intro_unnumbered_heading" for name, _options in calls)
     assert all("hotwords" not in options for _name, options in calls)
     assert (result.intro.removal_start_seconds == 0) == (recovered_heading == "Forward")
+
+
+@pytest.mark.parametrize("heading_state", ["complete", "missing", "truncated"])
+def test_intro_does_not_expand_for_trailing_narration_after_complete_heading(tmp_path, monkeypatch, heading_state):
+    words = _timed("This is a LibriVox recording.", 0, 0.3)
+    if heading_state == "complete":
+        words += [TimedWord("Chapter", 5, 5.4), TimedWord("three", 5.4, 5.8)]
+    elif heading_state == "truncated":
+        words += [TimedWord("Chapter", 18.8, 19.2), TimedWord("three", 19.2, 19.8)]
+    words += [TimedWord("The", 19.8, 19.9), TimedWord("story", 19.9, 20.0)]
+    calls = []
+
+    def transcribe(_audio, name, start, end, **_options):
+        calls.append(name)
+        return words
+
+    monkeypatch.setattr(detection._AnalysisAudio, "words", transcribe)
+    monkeypatch.setattr(detection._AnalysisAudio, "regions", lambda *_args: [])
+
+    recovered, _gaps = detection._transcribe_intro(
+        tmp_path / "chapter.mp3", tmp_path, 60, model=object(), safety_gap=0.6,
+        is_first_chapter=False, report=lambda _message: None, title="Chapter 3",
+    )
+
+    if heading_state == "complete":
+        assert calls == ["intro"]
+    else:
+        assert "intro_retry_30" in calls
+    assert recovered == words
 
 
 def test_short_notice_retry_checks_continuation_even_when_later_speech_looks_like_a_heading(tmp_path, monkeypatch):

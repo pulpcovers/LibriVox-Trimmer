@@ -64,9 +64,10 @@ class SettingsDialog(QDialog):
         advanced_form.addRow("Outro search window", self._outro_window)
         advanced_form.addRow("Extra intro removal margin", self._intro_margin)
         advanced_form.addRow(self._refinement)
-        self._credit_hotwords = QCheckBox("Narrator credit hotwords (experimental)")
+        self._credit_hotwords = QCheckBox("Use narrator-name hints")
         self._credit_hotwords.setToolTip(
-            "Use catalog narrator names as vocabulary hints for focused reader-credit retries only. "
+            "Experimental: use chapter-specific catalog narrator names as vocabulary hints "
+            "for focused reader-credit retries only. "
             "Hints may bias transcription; preview credit boundaries before exporting."
         )
         advanced_form.addRow(self._credit_hotwords)

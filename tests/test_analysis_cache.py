@@ -27,6 +27,17 @@ def test_cache_round_trips_transcripts_regions_and_silences_through_a_snapshot()
     assert restored.get_silences(10, 20.0, 0.5) is None
 
 
+def test_speech_regions_reuse_a_longer_same_start_measurement_without_losing_edge_speech():
+    cache = AnalysisCache()
+    cache.put_regions(0, 30, [(1.0, 2.5), (19.0, 22.0), (25.0, 28.0)])
+
+    assert cache.get_regions(0, 20) == [(1.0, 2.5), (19.0, 20)]
+    assert cache.get_regions(0, 40) is None
+    assert cache.get_regions(1, 20) is None
+    cache.put_regions(0, 25, [(3.0, 4.0)])
+    assert cache.get_regions(0, 20) == [(3.0, 4.0)]
+
+
 def test_hinted_transcripts_bypass_and_do_not_replace_baseline_cache(tmp_path, monkeypatch):
     cache = AnalysisCache()
     cache.put_words(8, 16, WORDS)

@@ -32,7 +32,7 @@ from librivox_trimmer.boundary_detection import (
     remove_duplicate_first_announcement,
 )
 from mutagen.mp3 import MP3
-from librivox_trimmer.metadata import catalog_chapter, read_track
+from librivox_trimmer.metadata import catalog_chapter, normalize_narrator_name, read_track
 from librivox_trimmer.model_manager import load_whisper_model
 from librivox_trimmer.transcription import detect_speech_regions, transcribe_words, uncovered_speech
 from librivox_trimmer.settings import DetectionSettings
@@ -212,6 +212,15 @@ def _transcribe_intro(
             and analyzed_intro_end < 45.0
             and front_matter_pending(intro_words, notice.notice_end_seconds)
         )
+        if unfinished_speech and notice is not None and not short_retry_reaches_edge:
+            complete_heading = any(
+                word.start >= notice.keep_time_seconds
+                and word.text.strip()[:1].isupper()
+                and chapter_heading_number(intro_words, word.start) is not None
+                and intro_words[index + 1].end < analyzed_intro_end - 3.0
+                for index, word in enumerate(intro_words[:-1])
+            )
+            unfinished_speech = not complete_heading
         if (
             notice is not None
             and notice.keep_time_seconds < analyzed_intro_end - 3
@@ -639,7 +648,10 @@ def _analyze_track(
     duration, title, _artist = read_track(track_path)
     chapter = catalog_chapter(track_path, book_metadata)
     title = chapter.get("title") or title
-    reader_names = [reader["name"] for reader in chapter.get("readers", []) if reader.get("name")]
+    reader_names = list(dict.fromkeys(
+        cleaned for reader in chapter.get("readers", [])
+        if reader.get("name") and (cleaned := normalize_narrator_name(reader["name"]))
+    ))
     if duration <= 0:
         raise ValueError("Cannot analyze a track with no duration.")
     book_title = (book_metadata or {}).get("title") or ""

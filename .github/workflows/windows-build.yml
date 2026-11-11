@@ -1,0 +1,142 @@
+name: Windows Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release (default branch only)
+        type: boolean
+        default: false
+      prerelease:
+        description: Mark a published release as a beta/prerelease
+        type: boolean
+        default: true
+      release_tag:
+        description: Optional release tag; must match v plus the package version
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}-${{ inputs.publish }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+    steps:
+      - name: Check out selected source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate version and publication request
+        id: metadata
+        env:
+          PUBLISH_RELEASE: ${{ inputs.publish }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/release_tools.py prepare
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
+          python -m pip install '.[dev,build]'
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Install NSIS
+        run: |
+          choco install nsis --version=3.11 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+      - name: Build portable ZIP and per-user installer
+        run: ./packaging/build_release.ps1 -Python python
+      - name: Verify release artifacts
+        run: python packaging/release_tools.py verify --directory dist
+      - name: Smoke-test installer, upgrade, and uninstall
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          $installer = Join-Path $PWD "dist/LibriVox-Trimmer-$env:PACKAGE_VERSION-windows-setup.exe"
+          ./packaging/smoke_install.ps1 -InstallerPath $installer -Version $env:PACKAGE_VERSION
+      - name: Upload downloadable test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ github.run_id }}
+          overwrite: true
+          retention-days: 3
+          if-no-files-found: error
+          path: |
+            dist/LibriVox-Trimmer-${{ steps.metadata.outputs.version }}-windows.zip
+            dist/LibriVox-Trimmer-${{ steps.metadata.outputs.version }}-windows.zip.sha256
+            dist/LibriVox-Trimmer-${{ steps.metadata.outputs.version }}-windows-setup.exe
+            dist/LibriVox-Trimmer-${{ steps.metadata.outputs.version }}-windows-setup.exe.sha256
+
+  publish:
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact tested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download the tested artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-${{ github.run_id }}
+          path: release-artifacts
+      - name: Recheck publication request
+        env:
+          PUBLISH_RELEASE: 'true'
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/release_tools.py prepare
+      - name: Recheck artifact checksums
+        run: python packaging/release_tools.py verify --directory release-artifacts
+      - name: Publish explicitly requested release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          PACKAGE_VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $title = "LibriVox Trimmer $env:RELEASE_TAG"
+          $notes = "Windows build from commit $env:GITHUB_SHA. Unsigned per-user installer and portable ZIP, with SHA-256 checksums. No paid signing service is used."
+          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, '--repo', $env:GITHUB_REPOSITORY, '--target', $env:GITHUB_SHA, '--title', $title, '--notes', $notes, '--draft')
+          if ($env:PRERELEASE -eq 'true') { $releaseArgs += '--prerelease' }
+          $releaseArgs += @(
+            "release-artifacts/LibriVox-Trimmer-$env:PACKAGE_VERSION-windows.zip",
+            "release-artifacts/LibriVox-Trimmer-$env:PACKAGE_VERSION-windows.zip.sha256",
+            "release-artifacts/LibriVox-Trimmer-$env:PACKAGE_VERSION-windows-setup.exe",
+            "release-artifacts/LibriVox-Trimmer-$env:PACKAGE_VERSION-windows-setup.exe.sha256"
+          )
+          & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed; existing releases are never overwritten.' }
+          & gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false
+          if ($LASTEXITCODE -ne 0) { throw 'Artifacts were uploaded to a draft, but publishing failed. Inspect that draft before retrying.' }

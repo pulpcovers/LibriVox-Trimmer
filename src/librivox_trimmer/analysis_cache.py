@@ -135,6 +135,20 @@ class AnalysisCache:
 
     def get_regions(self, start: float, end: float) -> list[tuple[float, float]] | None:
         stored = self._data["regions"].get(_window_key(start, end))
+        if stored is None:
+            prefix = f"{start:.3f}-"
+            candidates = []
+            for key, regions in self._data["regions"].items():
+                if key.startswith(prefix):
+                    try:
+                        cached_end = float(key[len(prefix):])
+                    except ValueError:
+                        continue
+                    if cached_end >= end:
+                        candidates.append((cached_end, regions))
+            if candidates:
+                stored = min(candidates, key=lambda candidate: candidate[0])[1]
+                return [(max(start, first), min(end, last)) for first, last in stored if first < end and last > start]
         return None if stored is None else [(region_start, region_end) for region_start, region_end in stored]
 
     def put_regions(self, start: float, end: float, regions: list[tuple[float, float]]) -> None:

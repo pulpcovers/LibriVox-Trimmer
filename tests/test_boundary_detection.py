@@ -439,6 +439,19 @@ def test_later_chapter_removes_reader_credit_and_book_title_before_the_chapter_h
     assert result.intro.reader_credit_start_seconds is None
 
 
+@pytest.mark.parametrize("title", ["1-4. Ned Land", "IV. Ned Land", "Chapter four: Ned Land", "Ch. 04 Ned Land", "04 - Ned Land (Chapter IV)"])
+def test_normalized_title_protects_heading_after_reader_credit(title):
+    notice = make_words("This is a LibriVox recording.")
+    credit = make_words("Read by A Reader,", start=3)
+    heading = make_words("Ned Land", start=5)
+    narration = make_words("The voyage began.", start=7)
+
+    result = detect_intro_boundary(notice + credit + heading + narration, chapter_title=title)
+
+    assert result.reader_credit_end_seconds == pytest.approx(credit[-1].end)
+    assert result.notice_end_seconds < heading[0].start
+
+
 def test_chapter_mentioned_in_lower_case_narration_is_not_treated_as_a_heading():
     notice = make_words("This is a LibraVox recording.")
     narration = make_words("He had read in chapter three of that book", start=3)

@@ -20,7 +20,7 @@ class DetectionSettings:
     outro_window_seconds: float = 30.0
     intro_safety_gap_seconds: float = 0.6
     refine_outro: bool = True
-    narrator_credit_hotwords: bool = False
+    narrator_credit_hotwords: bool = True
 
     def validate(self) -> None:
         if self.model_size not in MODEL_CHOICES:

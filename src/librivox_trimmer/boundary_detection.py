@@ -6,6 +6,7 @@ from typing import Sequence
 from rapidfuzz import fuzz
 
 from librivox_trimmer.transcription import TimedWord
+from librivox_trimmer.metadata import normalize_chapter_title
 
 
 INTRO_PHRASES = (
@@ -285,7 +286,7 @@ def detect_intro_boundary(
     reader_credit_start = None
     reader_credit_end = None
     reader_credit_prefix_end = None
-    title_text = re.sub(r"^\s*\d+\s*[-.:]\s*", "", chapter_title)
+    title_text = normalize_chapter_title(chapter_title)
     title_text = " ".join(_normalize_word(word) for word in title_text.split())
     headings = (
         _find_phrase_matches(words, (title_text,), threshold=88)

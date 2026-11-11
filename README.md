@@ -4,9 +4,9 @@ A Windows-first desktop app for reviewing and trimming LibriVox audiobook
 chapters. It analyses chapter openings and endings, suggests cut points, and
 exports approved MP3 intervals without re-encoding.
 
-Latest Windows release: 0.7.0 (beta). The source includes newer changes that are
-not yet included in that download: narrator hotwords, fresh transcription on
-every analysis, and delayed waveform recentering.
+Current version: 0.8.0 (beta), with an unsigned per-user Windows installer and a
+portable ZIP. Narrator hints, fresh transcription, metadata normalization, and
+delayed waveform recentering are included in this version.
 
 ## Highlights
 
@@ -27,17 +27,29 @@ removing a credit still requires transcription and pause checks. Chapters are
 matched by audio filename; missing or ambiguous chapter metadata falls back to
 the existing MP3-based detection.
 
+For matching, chapter titles are normalized to remove catalog numbering such as
+`1-4.`, `IV.`, `Ch. 02`, or an explicit trailing `(Chapter 1)` label. Genuine
+numeric titles such as `20,000 Leagues Under the Sea` are preserved. Narrator
+names are cleaned of trailing lifespan dates, with initials and typography
+normalized before credit matching and hints. Stored catalog text, displayed
+titles, MP3 tags, and exported filenames are not rewritten.
+
 ## Windows Beta Download
 
-Download the Windows ZIP from [GitHub Releases](https://github.com/pulpcovers/LibriVox-Trimmer/releases/tag/v0.7.0),
-extract the entire ZIP, and run **LibriVox Trimmer.exe** inside the extracted folder.
-Keep the accompanying `_internal` folder beside the executable. Python and a separate
-FFmpeg installation are not required. The speech model downloads on first analysis.
+Download the Windows installer from [GitHub Releases](https://github.com/pulpcovers/LibriVox-Trimmer/releases/tag/v0.8.0)
+and run **LibriVox-Trimmer-0.8.0-windows-setup.exe**. It installs for your account
+without administrator rights and adds a Start-menu shortcut.
+
+Alternatively, extract the entire portable ZIP and run **LibriVox Trimmer.exe**
+inside the extracted folder. Keep the accompanying `_internal` folder beside the
+executable. Python and a separate FFmpeg installation are not required. The speech
+model downloads on first analysis.
 
 This beta is unsigned, so Windows may show an unknown-publisher or SmartScreen warning.
 Only proceed after checking that the download came from this repository's release.
 A SHA-256 checksum file is provided alongside the ZIP. In PowerShell, use
-`Get-FileHash .\LibriVox-Trimmer-0.7.0-windows.zip -Algorithm SHA256` to compare it.
+`Get-FileHash .\LibriVox-Trimmer-0.8.0-windows-setup.exe -Algorithm SHA256` to compare
+the installer with its matching checksum file. The portable ZIP has its own checksum.
 
 ## Install and Test on Windows
 
@@ -204,6 +216,11 @@ future runs. Silence and speech-region measurements remain cached in both modes,
 and downloaded speech models are kept for reuse.
 **Clean Up Project** removes a project's remembered results with the project.
 
+Longer intro retries are skipped when the notice and a complete numbered heading
+are already recovered and only later narration reaches the initial window edge.
+Missing notices, incomplete headings, unresolved front matter, and speech-coverage
+gaps still receive the existing recovery checks.
+
 Detection preferences are also stored in each `.lvproj`. Opening a project
 restores its detection preferences; older projects use the current app defaults.
 Saving Preferences updates the current project's detection preferences and the
@@ -211,13 +228,15 @@ app defaults, but never recalculates its saved trim times. Rerun detection to us
 changed detection preferences. Folder changes apply to new projects, not existing
 files. **Restore Defaults** resets the dialog; **Save** applies those defaults.
 
-### Narrator Hotword Experiment
+### Narrator-Name Hints
 
-**Settings > Preferences > Advanced > Narrator credit hotwords (experimental)**
-is off by default. When enabled, catalog narrator names are supplied as vocabulary
+**Settings > Preferences > Advanced > Use narrator-name hints** is on by default.
+When enabled, chapter-specific catalog narrator names are supplied as vocabulary
 hints only to the focused reader-credit retry and its shorter fallback. Initial
 intro/outro transcription, heading retries, and speech-gap recovery stay unhinted.
-Tracks without matched narrator metadata behave as before.
+Tracks without matched narrator metadata behave as before. Existing saved on/off
+choices in preferences and projects are preserved; **Restore Defaults** enables
+hints. Disable the option when checking suspected bias or incorrect metadata.
 
 For an A/B comparison, analyse a chapter with the option off, note its credit cut
 and review warnings, then enable the option, save Preferences, and analyse the same
@@ -229,8 +248,9 @@ Hinted credit retries are freshly transcribed too. The progress message names
 the hotwords when used. Hints may invent or bias words; the existing credit-cue
 and pause checks still apply. A development comparison across 13 narrators found
 fewer intro warnings with hints enabled, but this is not a measured accuracy rate
-or a guarantee of safe cuts. This experiment is available in the current source,
-not the published 0.7.0 beta executable.
+or a guarantee of safe cuts. The option remains experimental, as its tooltip
+notes. It is available in the current source,
+and in the 0.8.0 beta installer and portable ZIP.
 
 ## Projects
 
@@ -244,6 +264,17 @@ the per-user app-data `Projects` folder (on Windows,
 `%LOCALAPPDATA%/LibriVoxTrimmer/Projects`) using the URL's project slug; it does
 not ask for a save location. Incomplete downloads are removed the next time the
 app starts.
+
+## Automated Windows Builds
+
+The **Windows Build and Release** GitHub Actions workflow can be run manually.
+Its default is an artifact-only test build: an unsigned per-user installer,
+portable ZIP, and checksum files, without publishing a release. Publishing is an
+explicit choice restricted to the default branch and an unused version/tag.
+See [the Windows build guide](packaging/README.md) for the controls and safeguards.
+
+The 0.8.0 release includes the installer and portable ZIP. Unsigned installers
+may still trigger Windows warnings.
 
 ## Roadmap
 

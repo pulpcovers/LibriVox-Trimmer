@@ -5,13 +5,14 @@ import pytest
 from librivox_trimmer.settings import AppSettings, DetectionSettings, load_settings, save_settings
 
 
-def test_settings_round_trip(tmp_path):
+@pytest.mark.parametrize("hints_enabled", [True, False])
+def test_settings_round_trip(tmp_path, hints_enabled):
     path = tmp_path / "settings.json"
     settings = AppSettings(
         projects_directory=str(tmp_path / "Books"),
         download_quality="smaller",
         auto_analyze_after_download=True,
-        detection=DetectionSettings(intro_window_seconds=90, detect_outro=False, narrator_credit_hotwords=True),
+        detection=DetectionSettings(intro_window_seconds=90, detect_outro=False, narrator_credit_hotwords=hints_enabled),
     )
     save_settings(settings, path)
     assert load_settings(path) == settings
@@ -22,7 +23,18 @@ def test_legacy_settings_default_auto_analysis_to_disabled(tmp_path):
     path.write_text('{"download_quality":"best"}', encoding="utf-8")
 
     assert load_settings(path).auto_analyze_after_download is False
-    assert load_settings(path).detection.narrator_credit_hotwords is False
+    assert load_settings(path).detection.narrator_credit_hotwords is True
+
+
+def test_new_and_legacy_detection_settings_enable_narrator_hints(tmp_path):
+    assert DetectionSettings().narrator_credit_hotwords is True
+    assert DetectionSettings.from_dict({}).narrator_credit_hotwords is True
+    assert load_settings(tmp_path / "missing.json").detection.narrator_credit_hotwords is True
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_explicit_narrator_hint_preference_is_preserved(enabled):
+    assert DetectionSettings.from_dict({"narrator_credit_hotwords": enabled}).narrator_credit_hotwords is enabled
 
 
 @pytest.mark.parametrize("changes", [
@@ -48,23 +60,24 @@ def test_dialog_save_reads_controls_and_cancel_does_not_modify_settings():
     dialog._intro_window.setValue(90)
     dialog._outro.setChecked(False)
     dialog._auto_analyze.setChecked(True)
-    assert not dialog._credit_hotwords.isChecked()
-    dialog._credit_hotwords.setChecked(True)
+    assert dialog._credit_hotwords.isChecked()
+    assert dialog._credit_hotwords.text() == "Use narrator-name hints"
+    dialog._credit_hotwords.setChecked(False)
     dialog._quality.setCurrentIndex(1)
     dialog._save()
     assert dialog.result_settings.detection.intro_window_seconds == 90
     assert not dialog.result_settings.detection.detect_outro
     assert dialog.result_settings.download_quality == "smaller"
     assert dialog.result_settings.auto_analyze_after_download
-    assert dialog.result_settings.detection.narrator_credit_hotwords
+    assert not dialog.result_settings.detection.narrator_credit_hotwords
     cancelled = SettingsDialog(original)
     cancelled._intro_window.setValue(120)
     cancelled._auto_analyze.setChecked(True)
-    cancelled._credit_hotwords.setChecked(True)
+    cancelled._credit_hotwords.setChecked(False)
     cancelled.reject()
     assert cancelled.result_settings == original
     dialog._populate(AppSettings())
-    assert not dialog._credit_hotwords.isChecked()
+    assert dialog._credit_hotwords.isChecked()
     dialog.close()
     cancelled.close()
     application.processEvents()
