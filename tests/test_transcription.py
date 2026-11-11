@@ -27,6 +27,23 @@ def test_transcribe_words_applies_absolute_window_offset(tmp_path):
     assert result[0].probability == 0.93
 
 
+def test_transcription_passes_optional_hotwords_without_prompting_baseline(tmp_path):
+    options_seen = []
+
+    class CapturingModel(FakeModel):
+        def transcribe(self, audio_path, **options):
+            options_seen.append(options)
+            return super().transcribe(audio_path, **options)
+
+    model = CapturingModel()
+    transcribe_words(tmp_path / "slice.wav", model=model)
+    transcribe_words(tmp_path / "slice.wav", model=model, hotwords="Nigel Fisher")
+
+    assert "hotwords" not in options_seen[0]
+    assert options_seen[1]["hotwords"] == "Nigel Fisher"
+    assert all("initial_prompt" not in options and "prefix" not in options for options in options_seen)
+
+
 def test_uncovered_speech_reports_speech_without_words():
     words = [TimedWord("Chapter", 0.5, 1.0), TimedWord("one.", 1.0, 1.4)]
     assert uncovered_speech(words, [(0.4, 1.5), (5.0, 9.0)]) == [(5.0, 9.0)]

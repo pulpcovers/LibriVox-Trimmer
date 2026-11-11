@@ -1,3 +1,6 @@
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from librivox_trimmer import audio, detection
@@ -24,14 +27,45 @@ def test_cache_round_trips_transcripts_regions_and_silences_through_a_snapshot()
     assert restored.get_silences(10, 20.0, 0.5) is None
 
 
-def test_cache_is_saved_per_track_content_and_model(tmp_path):
+def test_hinted_transcripts_bypass_and_do_not_replace_baseline_cache(tmp_path, monkeypatch):
+    cache = AnalysisCache()
+    cache.put_words(8, 16, WORDS)
+    snapshot = cache.snapshot()
+    calls = []
+    hinted = [TimedWord("Nigel", 9.0, 9.4, 0.95)]
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+
+    def transcribe(_path, **options):
+        calls.append(options["hotwords"])
+        return hinted
+
+    monkeypatch.setattr(detection, "transcribe_words", transcribe)
+    audio = detection._AnalysisAudio(tmp_path / "chapter.mp3", tmp_path, object())
+
+    with use_cache(cache):
+        assert audio.words("reader_credit", 8, 16) == WORDS
+        assert audio.words("reader_credit", 8, 16, hotwords="Nigel Fisher") == hinted
+        assert audio.words("reader_credit", 8, 16, hotwords="Other Reader") == hinted
+        assert audio.words("reader_credit", 8, 16) == WORDS
+
+    assert calls == ["Nigel Fisher", "Other Reader"]
+    assert cache.snapshot() == snapshot
+
+
+def test_disk_cache_keeps_audio_measurements_but_not_transcripts(tmp_path):
     track = tmp_path / "chapter.mp3"
     track.write_bytes(b"a" * 5000)
     cache = AnalysisCache.for_track(track, "base.en")
     cache.put_words(0, 20.0, WORDS)
+    cache.put_regions(0, 20.0, [(1.0, 2.5)])
+    cache.put_silences(0, 20.0, 0.35, [(3.0, 4.0)])
     cache.save()
 
-    assert AnalysisCache.for_track(track, "base.en").get_words(0, 20.0) == WORDS
+    assert "transcripts" not in json.loads(cache._path.read_text(encoding="utf-8"))
+    restored = AnalysisCache.for_track(track, "base.en")
+    assert restored.get_words(0, 20.0) is None
+    assert restored.get_regions(0, 20.0) == [(1.0, 2.5)]
+    assert restored.get_silences(0, 20.0, 0.35) == [(3.0, 4.0)]
     assert AnalysisCache.for_track(tmp_path / "chapter.mp3", "small.en").get_words(0, 20.0) is None
     track.write_bytes(b"b" * 5000)
     assert AnalysisCache.for_track(track, "base.en").get_words(0, 20.0) is None
@@ -56,7 +90,7 @@ def test_a_projects_cache_lives_in_its_files_folder_and_is_removed_with_it(tmp_p
     cache.save()
 
     assert [path.parent for path in (assets / "analysis-cache").glob("*.json")] == [assets / "analysis-cache"]
-    assert AnalysisCache.for_track(track, "base.en").get_words(0, 20.0) == WORDS
+    assert AnalysisCache.for_track(track, "base.en").get_words(0, 20.0) is None
 
     cleanup_project(project_path)
 
@@ -84,7 +118,8 @@ def test_an_already_active_cache_is_kept_by_analysis_sessions(tmp_path):
     assert active_cache() is None
 
 
-def test_reanalysing_the_same_track_reuses_the_recorded_transcripts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("bulk", [False, True])
+def test_every_analysis_reruns_transcription(tmp_path, monkeypatch, bulk):
     track = tmp_path / "chapter.mp3"
     track.write_bytes(b"x" * 5000)
     transcriptions = []
@@ -105,12 +140,42 @@ def test_reanalysing_the_same_track_reuses_the_recorded_transcripts(tmp_path, mo
     monkeypatch.setattr(detection, "transcribe_words", transcribe)
     monkeypatch.setattr(detection, "detect_speech_regions", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(audio, "_run_ffmpeg", offline)
+    monkeypatch.setattr(detection, "load_whisper_model", lambda _size: object())
+    monkeypatch.setattr(detection, "MP3", lambda _path: SimpleNamespace(tags={}))
     settings = DetectionSettings(detect_outro=False)
 
-    first = detection.analyze_track_boundaries(track, model=object(), settings=settings)
+    def analyze():
+        if bulk:
+            return detection.analyze_tracks_boundaries([track], settings=settings)
+        return detection.analyze_track_boundaries(track, model=object(), settings=settings)
+
+    first = analyze()
     transcribed = len(transcriptions)
-    second = detection.analyze_track_boundaries(track, model=object(), settings=settings)
+    last_word = notice[-1]
+    notice[-1] = TimedWord("recording!", last_word.start, last_word.end, last_word.probability)
+    second = analyze()
 
     assert transcribed > 0
-    assert len(transcriptions) == transcribed
+    assert len(transcriptions) == transcribed * 2
     assert second == first
+    assert AnalysisCache.for_track(track, settings.model_size).get_words(0, 20) is None
+    assert analyze() == second
+    assert len(transcriptions) == transcribed * 3
+
+
+def test_legacy_disk_transcripts_are_ignored_without_losing_audio_measurements(tmp_path):
+    track = tmp_path / "chapter.mp3"
+    track.write_bytes(b"legacy" * 1000)
+    cache = AnalysisCache.for_track(track, "base.en")
+    cache.put_words(0, 20, WORDS)
+    cache.put_words(100, 120, WORDS)
+    cache.put_regions(0, 20, [(1.0, 2.5)])
+    cache.put_silences(0, 20, 0.35, [(3.0, 4.0)])
+
+    cache._path.write_text(json.dumps(cache.snapshot()), encoding="utf-8")
+    cache = AnalysisCache.for_track(track, "base.en")
+
+    assert cache.get_words(0, 20) is None
+    assert cache.get_words(100, 120) is None
+    assert cache.get_regions(0, 20) == [(1.0, 2.5)]
+    assert cache.get_silences(0, 20, 0.35) == [(3.0, 4.0)]

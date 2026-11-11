@@ -11,6 +11,7 @@ from librivox_trimmer.audio import (
     reader_credit_pause,
     refine_announcement_outro_cut,
     refine_cut_before_heading,
+    refine_short_pause_before_heading,
     refine_cut_into_pause,
     refine_intro_resume_start,
     refine_outro_boundary_with_silence,
@@ -23,7 +24,11 @@ from librivox_trimmer.boundary_detection import (
     detect_intro_boundary,
     front_matter_pending,
     needs_repeated_book_title_retry,
+    has_repeated_book_title,
     match_reader_credit_end,
+    chapter_heading_number,
+    unnumbered_heading_retry_window,
+    UNNUMBERED_HEADINGS,
     remove_duplicate_first_announcement,
 )
 from mutagen.mp3 import MP3
@@ -58,7 +63,7 @@ def _total(gaps):
 
 
 class _AnalysisAudio:
-    """Slices a track for analysis; transcripts and speech regions of a window come from the cache when known."""
+    """Reuse audio slices and in-memory results; recorded snapshots also support transcript replay."""
 
     def __init__(self, track_path, temporary_path, model):
         self._track_path = track_path
@@ -74,12 +79,15 @@ class _AnalysisAudio:
             )
         return self._slices[key]
 
-    def words(self, name, start, end):
-        cache = active_cache()
+    def words(self, name, start, end, *, hotwords=None):
+        cache = active_cache() if not hotwords else None
         cached = cache.get_words(start, end) if cache is not None else None
         if cached is not None:
             return cached
-        words = transcribe_words(self._slice(name, start, end), model=self._model, offset_seconds=start)
+        words = transcribe_words(
+            self._slice(name, start, end), model=self._model, offset_seconds=start,
+            **({"hotwords": hotwords} if hotwords else {}),
+        )
         if cache is not None:
             cache.put_words(start, end, words)
         return words
@@ -156,12 +164,18 @@ def _transcribe_intro(
     coverage_window = ("intro", 0, analyzed_intro_end)
     intro_words = audio.words("intro", 0, analyzed_intro_end)
     original_intro_words = intro_words
+    short_retry_reaches_edge = False
     if analyzed_intro_end > 10 and detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap) is None:
         report(f"Checking first 10 seconds: {title}...")
-        intro_words = audio.words("intro_retry_10", 0, 10.0) + [
+        short_words = audio.words("intro_retry_10", 0, 10.0)
+        short_retry_reaches_edge = bool(short_words and short_words[-1].end >= 9.0)
+        intro_words = short_words + [
             word for word in original_intro_words if word.start >= 10.0
         ]
-    if intro_end > 10 and detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap) is None:
+    if intro_end > 10 and (
+        short_retry_reaches_edge
+        or detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap) is None
+    ):
         focus_start = 5.0
         focus_end = min(18.0, intro_end)
         report(f"Checking opening notice separately: {title}...")
@@ -242,12 +256,15 @@ def _transcribe_intro(
         if retry_end - retry_start >= 3.0:
             report(f"Checking for the repeated book title: {title}...")
             repeated_title_words = audio.words("intro_repeated_title", retry_start, retry_end)
-            intro_words = [
+            preserve_until = max(retry_start, notice.notice_end_seconds)
+            candidate_words = [
                 word for word in intro_words
-                if word.end <= retry_start or word.start >= retry_end
-            ] + repeated_title_words
-            intro_words.sort(key=lambda word: (word.start, word.end))
-            notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap)
+                if word.end <= preserve_until or word.start >= retry_end
+            ] + [word for word in repeated_title_words if word.start >= preserve_until]
+            candidate_words.sort(key=lambda word: (word.start, word.end))
+            if has_repeated_book_title(candidate_words, notice):
+                intro_words = candidate_words
+                notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap)
     if notice is not None and not is_first_chapter and front_matter_pending(intro_words, notice.notice_end_seconds):
         # Whisper often drops the short chapter heading after the credit and title lines; a focused retry finds it.
         focus_start = notice.notice_end_seconds + 5.0
@@ -260,6 +277,65 @@ def _transcribe_intro(
                 + [word for word in focused_words if word.start >= focus_start]
             )
             gaps = _relevant_gaps(intro_words, regions, safety_gap) if gaps else gaps
+    notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap)
+    if (
+        notice is not None and notice.heading_start_seconds is not None
+        and refine_cut_before_heading(track_path, notice.heading_start_seconds) is None
+    ):
+        focus_start = max(0.0, notice.heading_start_seconds - 2.0)
+        focus_end = min(intro_end, notice.heading_start_seconds + 4.0)
+        if focus_end - focus_start >= 3.0:
+            report(f"Re-checking the chapter heading timestamp: {title}...")
+            focused_words = audio.words("intro_heading_alignment", focus_start, focus_end)
+            expected_number = chapter_heading_number(intro_words, notice.heading_start_seconds)
+            focused_words = [
+                replace(word, text=word.text.strip().capitalize())
+                if expected_number is not None
+                and word.text.strip().casefold() in {"chapter", "section", "part"}
+                and abs(word.start - notice.heading_start_seconds) <= 2.0
+                and chapter_heading_number(focused_words, word.start) == expected_number
+                else word for word in focused_words
+            ]
+            candidate_words = sorted(
+                [word for word in intro_words if word.end <= focus_start or word.start >= focus_end]
+                + focused_words,
+                key=lambda word: (word.start, word.end),
+            )
+            candidate = detect_intro_boundary(candidate_words, safety_gap_seconds=safety_gap)
+            if (
+                candidate is not None and candidate.heading_start_seconds is not None
+                and abs(candidate.heading_start_seconds - notice.heading_start_seconds) <= 2.0
+                and expected_number is not None
+                and chapter_heading_number(candidate_words, candidate.heading_start_seconds) == expected_number
+                and refine_cut_before_heading(track_path, candidate.heading_start_seconds) is not None
+            ):
+                intro_words = candidate_words
+                gaps = _relevant_gaps(intro_words, regions, safety_gap) if gaps else gaps
+    if is_first_chapter:
+        notice = detect_intro_boundary(intro_words, safety_gap_seconds=safety_gap, retain_reader_credit=True)
+        retry_window = unnumbered_heading_retry_window(intro_words, notice) if notice is not None else None
+        if retry_window is not None and remove_duplicate_first_announcement(intro_words, notice).removal_start_seconds > 0:
+            focus_start, focus_end = retry_window
+            focus_end = min(intro_end, focus_end)
+            if focus_end - focus_start >= 3.0:
+                report(f"Checking for the repeated unnumbered heading: {title}...")
+                focused_words = audio.words("intro_unnumbered_heading", focus_start, focus_end)
+                heading = next((
+                    word for word in focused_words
+                    if word.text.strip(" .,:;!?").casefold() in UNNUMBERED_HEADINGS
+                ), None)
+                if heading is not None:
+                    candidate_words = sorted(
+                        [word for word in intro_words if word.start < heading.start or word.start >= focus_end]
+                        + [word for word in focused_words if word.start >= heading.start],
+                        key=lambda word: (word.start, word.end),
+                    )
+                    candidate = detect_intro_boundary(
+                        candidate_words, safety_gap_seconds=safety_gap, retain_reader_credit=True,
+                    )
+                    if candidate is not None and remove_duplicate_first_announcement(candidate_words, candidate).removal_start_seconds == 0:
+                        intro_words = candidate_words
+                        gaps = _relevant_gaps(intro_words, regions, safety_gap) if gaps else gaps
     return intro_words, gaps
 
 
@@ -321,6 +397,7 @@ def _transcribe_outro(
 def _confirm_reader_credit(
     track_path, detection, intro_words, duration, model, safety_gap, report, *, chapter_title="",
     reader_names=(),
+    narrator_credit_hotwords=False,
 ):
     intro = detection.intro
     if intro is None or intro.reader_credit_start_seconds is None:
@@ -329,10 +406,14 @@ def _confirm_reader_credit(
     crop_start = max(0.0, credit_start - 0.5)
     crop_end = min(duration, credit_start + 8.0)
     report("Checking the reader-credit boundary separately...")
+    hotwords = ", ".join(dict.fromkeys(name.strip() for name in reader_names if name.strip())) if narrator_credit_hotwords else ""
+    if hotwords:
+        report(f"Using narrator-credit hotwords: {hotwords}")
     try:
         with TemporaryDirectory(prefix="librivox-credit-") as temporary:
             focused_words = _AnalysisAudio(track_path, Path(temporary), model).words(
                 "reader_credit", crop_start, crop_end,
+                **({"hotwords": hotwords} if hotwords else {}),
             )
     except (OSError, RuntimeError, ValueError):
         focused_words = []
@@ -357,6 +438,7 @@ def _confirm_reader_credit(
                 with TemporaryDirectory(prefix="librivox-credit-short-") as temporary:
                     short_words = _AnalysisAudio(track_path, Path(temporary), model).words(
                         "reader_credit_short", crop_start, short_end,
+                        **({"hotwords": hotwords} if hotwords else {}),
                     )
             except (OSError, RuntimeError, ValueError):
                 short_words = []
@@ -383,14 +465,18 @@ def _confirm_reader_credit(
                     candidate_words, safety_gap_seconds=safety_gap, chapter_title=chapter_title,
                     reader_names=reader_names,
                 )
+    matched_name_end = (
+        match_reader_credit_end(candidate_words, candidate.reader_credit_prefix_end_seconds, reader_names)
+        if candidate is not None else None
+    )
     if (
         candidate is not None
         and candidate.reader_credit_start_seconds is not None
         and abs(candidate.reader_credit_start_seconds - credit_start) <= 1.0
         and candidate.reader_credit_end_seconds is not None
         and (
-            not reader_names or candidate.reader_credit_end_seconds == match_reader_credit_end(
-                candidate_words, candidate.reader_credit_prefix_end_seconds, reader_names,
+            not reader_names or (
+                matched_name_end is not None and matched_name_end <= candidate.reader_credit_end_seconds
             )
         )
     ):
@@ -456,6 +542,10 @@ def _refine_intro(track_path, detection, intro_words, safety_gap, report, title)
     refined_resume = None
     if intro.heading_start_seconds is not None:
         refined_resume = refine_cut_before_heading(track_path, intro.heading_start_seconds)
+        if refined_resume is None and notice_end < intro.heading_start_seconds:
+            refined_resume = refine_short_pause_before_heading(
+                track_path, notice_end, intro.heading_start_seconds,
+            )
         if refined_resume is None and intro.notice_only_end_seconds is not None:
             notice_end = intro.notice_only_end_seconds
             intro = replace(
@@ -606,6 +696,7 @@ def _analyze_track(
         track_path, detection, intro_words, duration, model,
         settings.intro_safety_gap_seconds, report, chapter_title=title,
         reader_names=reader_names,
+        narrator_credit_hotwords=settings.narrator_credit_hotwords,
     )
     detection = _refine_intro(
         track_path, detection, intro_words, settings.intro_safety_gap_seconds, report, title,
@@ -640,7 +731,6 @@ def analyze_track_boundaries(
     book_metadata: dict | None = None,
 ) -> BoundaryDetection:
     settings = settings or DetectionSettings()
-    # Transcripts and silences are remembered per track, so re-running after a logic change skips Whisper.
     with analysis_session(track_path, settings.model_size):
         return _analyze_track(
             track_path, model=model, progress_callback=progress_callback, settings=settings,

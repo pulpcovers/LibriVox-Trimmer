@@ -11,6 +11,24 @@ from librivox_trimmer.audio import (
 )
 
 
+@pytest.mark.parametrize("pause,expected", [
+    ((18.034, 18.244), 18.139),
+    ((17.5, 17.8), None),
+    ((18.05, 18.15), None),
+    ((18.3, 18.5), None),
+    ((17.9, 18.0), None),
+])
+def test_short_heading_pause_requires_alignment_on_both_sides(tmp_path, monkeypatch, pause, expected):
+    monkeypatch.setattr(audio, "_detect_silences", lambda *_args: [pause])
+
+    result = audio.refine_short_pause_before_heading(tmp_path / "chapter.mp3", 17.86, 18.22)
+
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected)
+
+
 def test_resolve_ffmpeg_prefers_bundled_and_never_uses_one_from_the_working_folder(tmp_path, monkeypatch):
     bundled = tmp_path / "bundled" / "ffmpeg.exe"
     planted = tmp_path / "work" / "ffmpeg.exe"

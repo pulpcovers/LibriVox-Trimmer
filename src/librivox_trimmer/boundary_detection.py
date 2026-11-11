@@ -200,6 +200,14 @@ def _front_matter(words: Sequence[TimedWord], notice_end: float) -> tuple[bool, 
     return False, None, None
 
 
+def chapter_heading_number(words: Sequence[TimedWord], heading_start: float) -> int | None:
+    tokens = _tokenize(words)
+    for word, following in zip(tokens, tokens[1:]):
+        if abs(word.start - heading_start) <= 0.05 and word.text in {"chapter", "section", "part"}:
+            return _number_value(following.text)
+    return None
+
+
 def front_matter_pending(words: Sequence[TimedWord], notice_end: float) -> bool:
     """Credit or title speech ("... by <name>") follows the notice but no chapter heading has been heard yet."""
     if _front_matter(words, notice_end)[0]:
@@ -218,16 +226,20 @@ def match_reader_credit_end(
     spoken = [word for word in _tokenize(words) if word.start >= cue_end - 0.05]
     endings = []
     for name in reader_names:
-        expected = [_normalize_word(token) for token in name.split() if _normalize_word(token)]
-        matched = spoken[:len(expected)]
-        if (
-            expected and len(matched) == len(expected)
-            and matched[0].start <= cue_end + 0.75
-            and matched[-1].end <= cue_end + 6
-            and all(fuzz.ratio(token, word.text) >= 90 for token, word in zip(expected, matched))
-            and all(following.start - previous.end <= 1 for previous, following in zip(matched, matched[1:]))
-        ):
-            endings.append(matched[-1].end)
+        name_tokens = [_normalize_word(token) for token in name.split() if _normalize_word(token)]
+        variants = [name_tokens]
+        if len(name_tokens) > 2:
+            variants.append(name_tokens[:1] + [token for token in name_tokens[1:-1] if len(token) > 1] + name_tokens[-1:])
+        for expected in variants:
+            matched = spoken[:len(expected)]
+            if (
+                expected and len(matched) == len(expected)
+                and matched[0].start <= cue_end + 0.75
+                and matched[-1].end <= cue_end + 6
+                and all(fuzz.ratio(token, word.text) >= 90 for token, word in zip(expected, matched))
+                and all(following.start - previous.end <= 1 for previous, following in zip(matched, matched[1:]))
+            ):
+                endings.append(matched[-1].end)
     return max(endings, default=None)
 
 
@@ -303,7 +315,35 @@ def detect_intro_boundary(
         name_end = match_reader_credit_end(words, credit.end, reader_names)
         if name_end is not None and name_end <= heading_start:
             credit_end = name_end
-            confirmed_end = True
+            name_word = next((word for word in reversed(words) if word.end == name_end), None)
+            following_word = next((word for word in words if word.end > name_end), None)
+            location_words = []
+            for word in words:
+                if word.end <= name_end:
+                    continue
+                if (
+                    word.start - name_end > 2.0 or len(location_words) >= 6
+                    or _normalize_word(word.text) in {"chapter", "section", "part"}
+                    or not word.text.strip()[:1].isupper()
+                ):
+                    break
+                location_words.append(word)
+                if word.text.rstrip().endswith((".", "!", "?")):
+                    break
+            capitalized_location = (
+                following_word is not None and following_word.start - name_end <= 0.25
+                and len(location_words) >= 2
+                and any(word.text.rstrip().endswith(",") for word in location_words)
+                and location_words[-1].text.rstrip().endswith((".", "!", "?"))
+            )
+            location_follows = (
+                name_word is not None and name_word.text.rstrip().endswith(",")
+            ) or (
+                following_word is not None
+                and following_word.start - name_end <= 1.0
+                and _normalize_word(following_word.text) in {"of", "from", "in"}
+            ) or capitalized_location
+            confirmed_end = not location_follows
         for word in (() if confirmed_end else words):
             if word.end <= credit_end:
                 continue
@@ -432,12 +472,25 @@ def detect_outro_boundary(
     )
 
 
+UNNUMBERED_HEADINGS = {
+    "foreword": "foreword", "forward": "foreword",
+    "introduction": "introduction", "preface": "preface", "prologue": "prologue",
+    "epilogue": "epilogue", "afterword": "afterword", "dedication": "dedication",
+}
+
+
 def _announcement_parts(text):
     identities = {}
     content = []
     index = 0
     while index < len(text):
         token = text[index]
+        if token in UNNUMBERED_HEADINGS:
+            identities["unnumbered"] = UNNUMBERED_HEADINGS[token]
+            index += 1
+            if index < len(text) and text[index] in {"to", "of"}:
+                index += 1
+            continue
         if token in {"part", "chapter", "section"} and index + 1 < len(text):
             value = _number_value(text[index + 1])
             if value is not None:
@@ -460,9 +513,13 @@ def remove_duplicate_first_announcement(
     if opening_end is None:
         return intro
     before = [word.text for word in tokens if word.end <= opening_end]
+    after_start = min(
+        intro.keep_time_seconds,
+        intro.heading_start_seconds if intro.heading_start_seconds is not None else intro.keep_time_seconds,
+    )
     after = [
         word.text for word in tokens
-        if word.end > intro.keep_time_seconds
+        if word.end >= after_start
         and word.start < intro.keep_time_seconds + 20
     ]
     announcement_parts = _announcement_parts
@@ -472,7 +529,10 @@ def remove_duplicate_first_announcement(
     repeated_announcement = bool(
         earlier_ids
         and all(later_ids.get(key) == value for key, value in earlier_ids.items())
-        and len(earlier_content) >= 2
+        and (
+            len(earlier_content) >= 2
+            or (set(earlier_ids) == {"unnumbered"} and not earlier_content)
+        )
         and all(any(fuzz.ratio(token, other) >= 85 for other in later_content) for token in earlier_content)
     )
     if not retain_book_information:
@@ -502,11 +562,11 @@ def remove_duplicate_first_announcement(
             for later in range(min(10, max(0, len(later_content) - 1)))
         )
         if repeated_number or repeated_title or repeated_announcement:
-            repeated_title_heading = None
+            repeated_title_heading = intro.heading_start_seconds if repeated_number else None
             if repeated_title and len(title_content) >= 2:
                 later_words = [
                     word for word in tokens
-                    if word.end > intro.keep_time_seconds
+                    if word.end >= after_start
                     and word.start < intro.keep_time_seconds + 20
                 ]
                 later_significant = [
@@ -560,10 +620,29 @@ def remove_duplicate_first_announcement(
     return intro
 
 
-def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundarySuggestion) -> bool:
-    """Whether a numbered opening announcement may be repeated after the notice but was not transcribed."""
+def unnumbered_heading_retry_window(
+    words: Sequence[TimedWord], intro: BoundarySuggestion,
+) -> tuple[float, float] | None:
+    if intro.removal_start_seconds <= 0:
+        return None
+    before = [word.text for word in _tokenize(words) if word.end <= intro.removal_start_seconds]
+    if not before or before[0] not in UNNUMBERED_HEADINGS:
+        return None
+    title_start = 2 if len(before) > 1 and before[1] in {"to", "of"} else 1
+    title = before[title_start:]
+    if len(title) < 2:
+        return None
+    after = [word for word in words if intro.keep_time_seconds <= word.start < intro.keep_time_seconds + 20]
+    matches = _find_phrase_matches(after, (" ".join(title),), threshold=90)
+    if not matches:
+        return None
+    match = max(matches, key=lambda item: item.score)
+    return max(intro.keep_time_seconds, match.end - 0.75), match.end + 5.5
+
+
+def _repeated_book_title_status(words: Sequence[TimedWord], intro: BoundarySuggestion) -> tuple[bool, bool]:
     if intro.notice_start_seconds is None or intro.notice_end_seconds is None:
-        return False
+        return False, False
     tokens = _tokenize(words)
     before = [token.text for token in tokens if token.end <= intro.notice_start_seconds]
     after = [
@@ -572,7 +651,7 @@ def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundaryS
     ]
     by_index = next((index for index, token in enumerate(before) if token == "by"), None)
     if by_index is None:
-        return False
+        return False, False
 
     declaration = next((
         index for index, token in enumerate(before[:by_index - 1])
@@ -584,7 +663,7 @@ def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundaryS
     elif before and _number_value(before[0]) is not None:
         title_start = 1
     else:
-        return False
+        return False, False
     if title_start < by_index and before[title_start] == "of":
         title_start += 1
     title_content = [
@@ -592,7 +671,7 @@ def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundaryS
         if token not in {"of", "the", "by", "a", "an"}
     ]
     if len(title_content) < 2:
-        return False
+        return False, False
 
     significant_after = [token for token in after if token not in {"of", "the", "by", "a", "an"}]
     title_repeats = any(
@@ -605,7 +684,17 @@ def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundaryS
         or _number_value(token) is not None
         for index, token in enumerate(after)
     )
-    return has_numbered_heading and not title_repeats
+    return has_numbered_heading, title_repeats
+
+
+def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundarySuggestion) -> bool:
+    """Whether a numbered opening announcement may be repeated after the notice but was not transcribed."""
+    has_heading, title_repeats = _repeated_book_title_status(words, intro)
+    return has_heading and not title_repeats
+
+
+def has_repeated_book_title(words: Sequence[TimedWord], intro: BoundarySuggestion) -> bool:
+    return _repeated_book_title_status(words, intro)[1]
 
 
 def _title_variants(normalized_title: str) -> list[str]:

@@ -411,7 +411,9 @@ def test_selected_analysis_receives_saved_catalog_metadata(window, frame_grid, m
     monkeypatch.setattr(window, "_start_worker", lambda function, *_args, **_kwargs: captured.update(work=function))
     monkeypatch.setattr(
         main_window, "analyze_track_boundaries",
-        lambda path, **options: captured.update(path=path, metadata=options["book_metadata"]),
+        lambda path, **options: captured.update(
+            path=path, metadata=options["book_metadata"],
+        ),
     )
 
     window._detect_selected()

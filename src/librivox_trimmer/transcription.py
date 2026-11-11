@@ -65,6 +65,7 @@ def transcribe_words(
     *,
     model=None,
     offset_seconds: float = 0,
+    hotwords: str | None = None,
 ) -> list[TimedWord]:
     model = model or load_whisper_model()
     segments, _info = model.transcribe(
@@ -73,6 +74,7 @@ def transcribe_words(
         word_timestamps=True,
         vad_filter=False,
         condition_on_previous_text=False,
+        **({"hotwords": hotwords} if hotwords else {}),
     )
 
     timed_words: list[TimedWord] = []

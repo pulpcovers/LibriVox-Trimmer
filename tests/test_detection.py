@@ -127,7 +127,10 @@ def test_omitted_credit_gets_one_short_retry_without_losing_recovered_heading(tm
         assert "protect narration" in result.intro_review_reason
 
 
-def _credit_case(monkeypatch, credit_words, tail_words, pauses, resume, chapter_title="", reader_names=()):
+def _credit_case(
+    monkeypatch, credit_words, tail_words, pauses, resume, chapter_title="", reader_names=(),
+    narrator_credit_hotwords=False,
+):
     notice = _timed("This LibriVox recording is in the public domain", 5, 0.4)
     words = notice + credit_words + tail_words
     monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
@@ -142,6 +145,7 @@ def _credit_case(monkeypatch, credit_words, tail_words, pauses, resume, chapter_
         Path("chapter.mp3"), original, words, 100, object(), 0.6, lambda _message: None,
         chapter_title=chapter_title,
         reader_names=reader_names,
+        narrator_credit_hotwords=narrator_credit_hotwords,
     )
 
 
@@ -164,13 +168,15 @@ def test_credit_followed_by_a_short_aligned_pause_is_confirmed(monkeypatch):
 
 @pytest.mark.parametrize("reader_name", ["Nigel Fisher", "Other Reader"])
 @pytest.mark.parametrize("pause_confirmed", [True, False])
-def test_catalog_reader_requires_spoken_name_and_confirmed_pause(monkeypatch, reader_name, pause_confirmed):
+@pytest.mark.parametrize("hotwords_enabled", [True, False])
+def test_catalog_reader_requires_spoken_name_and_confirmed_pause(monkeypatch, reader_name, pause_confirmed, hotwords_enabled):
     credit = _FISHER[:3] + [TimedWord("Fisher", 10.0, 10.4)]
     result = _credit_case(
         monkeypatch, credit, _timed("Our reception was splendid", 10.8, 0.4),
         pauses={0.75: (10.5, 10.75)} if pause_confirmed else {},
         resume=10.6 if pause_confirmed else None,
         reader_names=[reader_name],
+        narrator_credit_hotwords=hotwords_enabled,
     )
 
     if reader_name == "Nigel Fisher" and pause_confirmed:
@@ -182,6 +188,80 @@ def test_catalog_reader_requires_spoken_name_and_confirmed_pause(monkeypatch, re
         assert "protect narration" in result.intro_review_reason
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("reader_names", [["Nigel Fisher", "Nigel Fisher"], []])
+def test_narrator_hotwords_are_limited_to_both_credit_retry_windows(tmp_path, monkeypatch, enabled, reader_names):
+    notice = _timed("This LibriVox recording is in the public domain", 5, 0.4)
+    tail = _timed("Our reception was splendid", 12, 0.4)
+    initial = notice + _FISHER + tail
+    original = detection.detect_boundaries(initial, [], reader_names=reader_names)
+    calls = []
+
+    def transcribe(path, **options):
+        calls.append((path.stem, options))
+        return tail if len(calls) == 1 else _FISHER
+
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", transcribe)
+    monkeypatch.setattr(detection, "reader_credit_pause", lambda *_args: (10.6, 11.3))
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: 10.95)
+    messages = []
+
+    result = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", original, initial, 100, object(), 0.6, messages.append,
+        reader_names=reader_names, narrator_credit_hotwords=enabled,
+    )
+
+    assert [name for name, _options in calls] == ["reader_credit", "reader_credit_short"]
+    expected = "Nigel Fisher" if enabled and reader_names else None
+    assert [options.get("hotwords") for _name, options in calls] == [expected, expected]
+    assert all("initial_prompt" not in options for _name, options in calls)
+    assert any("Using narrator-credit hotwords" in message for message in messages) == bool(expected)
+    assert result.intro.keep_time_seconds == 10.95
+
+
+@pytest.mark.parametrize("name_ending,location_prefix", [("Fisher,", ""), ("Fisher", "of ")])
+@pytest.mark.parametrize("pause_confirmed", [True, False])
+def test_catalog_name_does_not_truncate_location_credit(monkeypatch, name_ending, location_prefix, pause_confirmed):
+    credit = _FISHER[:3] + [TimedWord(name_ending, 10.0, 10.4)]
+    location = _timed(location_prefix + "Simpsonville South Carolina.", 10.8, 0.3)
+    credit_end = location[-1].end
+    result = _credit_case(
+        monkeypatch, credit, location + _timed("Our reception was splendid.", credit_end + 2, 0.3),
+        pauses={0.75: (credit_end + 0.2, credit_end + 1.0)} if pause_confirmed else {},
+        resume=credit_end + 0.5 if pause_confirmed else None,
+        reader_names=["Nigel Fisher"],
+    )
+
+    if pause_confirmed:
+        assert result.intro.reader_credit_end_seconds == pytest.approx(credit_end)
+        assert result.intro.keep_time_seconds == pytest.approx(credit_end + 0.5)
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds <= 8.7
+        assert "protect narration" in result.intro_review_reason
+
+
+@pytest.mark.parametrize("tail,location", [
+    ("Baton Rouge, Louisiana.", True),
+    ("Our reception was splendid.", False),
+    ("Baton Rouge was busy.", False),
+    ("Chapter six A New Arrival.", False),
+])
+def test_catalog_credit_handles_missing_comma_only_for_bounded_location_tail(monkeypatch, tail, location):
+    credit = _FISHER[:3] + [TimedWord("Fisher", 10.0, 10.4)]
+    following = _timed(tail, 10.4, 0.25)
+    expected_end = following[-1].end if location else 10.4
+    result = _credit_case(
+        monkeypatch, credit, following,
+        pauses={0.75: (expected_end + 0.2, expected_end + 1.0)}, resume=expected_end + 0.5,
+        reader_names=["Nigel Fisher"],
+    )
+
+    assert result.intro.reader_credit_end_seconds == pytest.approx(expected_end)
+    assert result.intro_review_reason is None
+
+
 def test_catalog_reader_name_without_notice_does_not_create_a_cut():
     words = _timed("Read by Nigel Fisher The story begins", 0, 0.3)
 
@@ -191,7 +271,8 @@ def test_catalog_reader_name_without_notice_does_not_create_a_cut():
 
 
 @pytest.mark.parametrize("metadata_case", ["matched", "unmatched", "missing"])
-def test_catalog_titles_and_matched_readers_reach_detection(tmp_path, monkeypatch, metadata_case):
+@pytest.mark.parametrize("hotwords_enabled", [True, False])
+def test_catalog_titles_and_matched_readers_reach_detection(tmp_path, monkeypatch, metadata_case, hotwords_enabled):
     from types import SimpleNamespace
 
     metadata = {
@@ -216,15 +297,21 @@ def test_catalog_titles_and_matched_readers_reach_detection(tmp_path, monkeypatc
         return BoundaryDetection(None, None)
 
     monkeypatch.setattr(detection, "detect_boundaries", detect)
+    monkeypatch.setattr(
+        detection, "_confirm_reader_credit",
+        lambda _path, result, *_args, **options: captured.update(credit_hotwords=options["narrator_credit_hotwords"]) or result,
+    )
 
     detection._analyze_track(
-        tmp_path / "chapter.mp3", model=object(), settings=DetectionSettings(refine_outro=False),
+        tmp_path / "chapter.mp3", model=object(),
+        settings=DetectionSettings(refine_outro=False, narrator_credit_hotwords=hotwords_enabled),
         is_last_chapter=True, book_metadata=metadata,
     )
 
     assert captured["chapter_title"] == ("The River Bank" if metadata_case == "matched" else "Embedded Chapter")
     assert captured["book_title"] == ("Embedded Book" if metadata_case == "missing" else "Catalog Book")
     assert captured["reader_names"] == (["Nigel Fisher"] if metadata_case == "matched" else [])
+    assert captured["credit_hotwords"] == hotwords_enabled
 
 
 @pytest.mark.parametrize("punctuated", [True, False])
@@ -243,6 +330,141 @@ def test_credit_pause_is_checked_when_focused_transcript_has_no_following_words(
         assert result.intro.keep_time_seconds < credit[0].start
         assert result.intro.reader_credit_end_seconds is None
         assert "protect narration" in result.intro_review_reason
+
+
+@pytest.mark.parametrize("retry_aligned", [True, False])
+@pytest.mark.parametrize("retry_heading", ["Chapter", "chapter"])
+@pytest.mark.parametrize("retry_number", ["ten", "eleven"])
+def test_unaligned_front_matter_heading_gets_a_focused_retry(tmp_path, monkeypatch, retry_aligned, retry_heading, retry_number):
+    words = _timed("This LibriVox recording is in the public domain", 7, 0.4)
+    words += _timed("Read by Mark Smith.", 12.52, 0.3)
+    words += [
+        TimedWord("The", 17.50, 18.30), TimedWord("Swiss", 18.30, 18.52),
+        TimedWord("Family", 18.52, 18.88), TimedWord("Robinson", 18.88, 19.32),
+        TimedWord("by", 19.72, 20.38), TimedWord("Johann", 20.38, 20.72),
+        TimedWord("David", 20.80, 21.06), TimedWord("Wyss.", 21.06, 21.44),
+        TimedWord("Chapter", 21.52, 22.92), TimedWord("ten", 22.92, 23.30),
+    ] + _timed("After dinner we rested.", 25.96, 0.3)
+    calls = []
+
+    def transcribe(_audio, name, start, end, **_options):
+        calls.append(name)
+        result = [word for word in words if start <= word.start and word.end <= end]
+        if name == "intro_heading_alignment" and retry_aligned:
+            result = [
+                TimedWord(retry_heading, 22.48, word.end) if word.text == "Chapter"
+                else TimedWord(retry_number, word.start, word.end) if word.text == "ten" else word
+                for word in result
+            ]
+        return result
+
+    monkeypatch.setattr(detection._AnalysisAudio, "words", transcribe)
+    monkeypatch.setattr(detection._AnalysisAudio, "regions", lambda *_args: [])
+    monkeypatch.setattr(detection, "refine_cut_before_heading", lambda _path, start: 22.157 if start == 22.48 else None)
+
+    recovered, _gaps = detection._transcribe_intro(
+        tmp_path / "chapter.mp3", tmp_path, 60, model=object(), safety_gap=0.6,
+        is_first_chapter=False, report=lambda _message: None, title="Chapter 10",
+    )
+    intro = detection.detect_intro_boundary(recovered)
+
+    assert "intro_heading_alignment" in calls
+    assert intro.heading_start_seconds == (22.48 if retry_aligned and retry_number == "ten" else 21.52)
+
+
+@pytest.mark.parametrize("recovered_heading", ["Forward", "Introduction", None])
+def test_missing_unnumbered_heading_retry_requires_matching_spoken_heading(tmp_path, monkeypatch, recovered_heading):
+    words = _timed("Foreword to A Princess of Mars by Edgar Rice Burroughs.", 0, 0.3)
+    words += _timed("This is a LibriVox recording.", 5, 0.3)
+    words += _timed("A Princess of Mars by Edgar Rice Burroughs.", 12, 0.3)
+    words += _timed("To the reader of this work.", 19, 0.3)
+    calls = []
+
+    def transcribe(_audio, name, start, end, **options):
+        calls.append((name, options))
+        if name == "intro_unnumbered_heading":
+            return _timed((recovered_heading + ". " if recovered_heading else "") + "To the reader", 16, 0.3)
+        return [word for word in words if start <= word.start and word.end <= end]
+
+    monkeypatch.setattr(detection._AnalysisAudio, "words", transcribe)
+    monkeypatch.setattr(detection._AnalysisAudio, "regions", lambda *_args: [])
+
+    recovered, _gaps = detection._transcribe_intro(
+        tmp_path / "foreword.mp3", tmp_path, 30, model=object(), safety_gap=0.6,
+        is_first_chapter=True, report=lambda _message: None, title="Foreword",
+    )
+    result = detection.detect_boundaries(recovered, [], is_first_chapter=True)
+
+    assert any(name == "intro_unnumbered_heading" for name, _options in calls)
+    assert all("hotwords" not in options for _name, options in calls)
+    assert (result.intro.removal_start_seconds == 0) == (recovered_heading == "Forward")
+
+
+def test_short_notice_retry_checks_continuation_even_when_later_speech_looks_like_a_heading(tmp_path, monkeypatch):
+    short = _timed("Chapter one This is a LibriVox recording All LibriVox recordings are in the public domain", 0, 0.4)
+    short += [TimedWord("For", 9.42, 9.48), TimedWord("more", 9.48, 9.66), TimedWord("information...", 9.66, 9.98)]
+    misplaced = [TimedWord("CHAPTER", 10.82, 12.22), TimedWord("I.", 12.22, 12.78)]
+    continuation = _timed("For more information or to volunteer please visit LibriVox org.", 9.42, 0.4)
+    calls = []
+
+    def transcribe(_audio, name, start, end, **_options):
+        calls.append(name)
+        if name == "intro":
+            return misplaced
+        if name == "intro_retry_10":
+            return short
+        return short[8:19] + continuation
+
+    monkeypatch.setattr(detection._AnalysisAudio, "words", transcribe)
+    monkeypatch.setattr(detection._AnalysisAudio, "regions", lambda *_args: [])
+
+    words, _gaps = detection._transcribe_intro(
+        tmp_path / "chapter.mp3", tmp_path, 60, model=object(), safety_gap=0.6,
+        is_first_chapter=False, report=lambda _message: None, title="Chapter 1",
+    )
+    intro = detection.detect_intro_boundary(words)
+
+    assert "intro_notice" in calls
+    assert intro.notice_only_end_seconds >= continuation[-1].end
+    assert misplaced[0] not in words
+
+
+@pytest.mark.parametrize("title_recovered", [True, False])
+def test_repeated_title_retry_preserves_credit_cue_even_when_it_crosses_crop_start(tmp_path, monkeypatch, title_recovered):
+    words = _timed("Chapter nine of A Princess of Mars by Edgar Rice Burroughs", 0, 0.3)
+    words += _timed("This LibriVox recording is in the public domain", 5, 0.3)
+    words += [
+        TimedWord("Read", 8.92, 9.34), TimedWord("by", 9.34, 9.64),
+        TimedWord("Terry", 9.64, 9.82),
+    ]
+    words += _timed("Chapter nine I learned the language.", 11.42, 0.3)
+    words += _timed("As I came back to myself.", 16, 0.3)
+    calls = []
+
+    def transcribe(_audio, name, start, end, **_options):
+        calls.append(name)
+        if name == "intro_repeated_title":
+            text = "A Princess of Mars Chapter nine" if title_recovered else "As I came back to myself"
+            return _timed(text, 11, 0.3)
+        return [word for word in words if start <= word.start and word.end <= end]
+
+    monkeypatch.setattr(detection._AnalysisAudio, "words", transcribe)
+    monkeypatch.setattr(detection._AnalysisAudio, "regions", lambda *_args: [])
+
+    recovered, _gaps = detection._transcribe_intro(
+        tmp_path / "chapter.mp3", tmp_path, 30, model=object(), safety_gap=0.6,
+        is_first_chapter=False, report=lambda _message: None, title="Chapter 9",
+    )
+    intro = detection.detect_intro_boundary(recovered)
+
+    assert "intro_repeated_title" in calls
+    assert TimedWord("by", 9.34, 9.64) in recovered
+    if title_recovered:
+        assert intro.heading_start_seconds is not None
+        assert intro.notice_end_seconds >= 9.82
+    else:
+        assert intro.reader_credit_start_seconds == 8.92
+        assert recovered == words
 
 
 def test_unconfirmed_heading_does_not_authorize_removing_front_matter(tmp_path, monkeypatch):

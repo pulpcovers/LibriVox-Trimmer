@@ -273,7 +273,7 @@ def test_project_preserves_detection_preferences_on_resave(tmp_path, monkeypatch
     chapter = tmp_path / "chapter.mp3"
     chapter.write_bytes(b"audio")
     project_path = tmp_path / "Book.lvproj"
-    preferences = DetectionSettings(model_size="tiny.en", intro_window_seconds=90)
+    preferences = DetectionSettings(model_size="tiny.en", intro_window_seconds=90, narrator_credit_hotwords=True)
     save_project(
         project_path, [chapter], detection_settings=preferences,
         reviews={chapter.resolve(): TrackReview(3, 110)},

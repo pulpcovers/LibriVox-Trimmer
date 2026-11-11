@@ -12,6 +12,23 @@ def make_words(text: str, start: float = 0) -> list[TimedWord]:
     ]
 
 
+@pytest.mark.parametrize("catalog,spoken,confirmed", [
+    ("Thomas A. Copeland", "Thomas Copeland", True),
+    ("Thomas A. Copeland", "Thomas A Copeland", True),
+    ("Mark F. Smith", "Mark Smith", True),
+    ("Thomas Arthur Copeland", "Thomas Copeland", False),
+    ("Thomas A. Copeland", "Thomas Other", False),
+    ("Thomas A. Copeland", "Other Copeland", False),
+])
+def test_reader_name_allows_only_omitted_middle_initials(catalog, spoken, confirmed):
+    from librivox_trimmer.boundary_detection import match_reader_credit_end
+
+    words = make_words(spoken, start=1)
+    result = match_reader_credit_end(words, 1, [catalog])
+
+    assert result == (words[-1].end if confirmed else None)
+
+
 def test_repeated_book_title_retry_requires_a_missing_title_and_later_numbered_heading():
     opening = make_words("Chapter eight of The Hour of the Dragon by Robert E Howard")
     notice = make_words("This is a LibriVox recording", start=6)
@@ -84,6 +101,58 @@ def test_first_chapter_keeps_richer_repeated_announcement_after_notice():
     assert result.intro.keep_time_seconds < after[0].start
     ordinary = detect_boundaries(before + notice + after, [])
     assert ordinary.intro.removal_start_seconds == 0
+
+
+@pytest.mark.parametrize("heading", ["Foreword", "Forward", "Introduction", "Preface", "Prologue", "Epilogue", "Afterword", "Dedication"])
+@pytest.mark.parametrize("with_title", [True, False])
+def test_first_track_drops_repeated_unnumbered_announcement(heading, with_title):
+    before_text = heading + (" to A Princess of Mars by Edgar Rice Burroughs" if with_title else "")
+    after_heading = "Foreword" if heading == "Forward" else heading
+    after_text = ("A Princess of Mars by Edgar Rice Burroughs " if with_title else "") + after_heading
+    before = make_words(before_text)
+    notice = make_words("This is a LibriVox recording", start=8)
+    after = make_words(after_text, start=14)
+
+    result = detect_boundaries(before + notice + after, [], is_first_chapter=True)
+
+    assert result.intro.removal_start_seconds == 0
+    assert result.intro.keep_time_seconds < after[0].start
+
+
+@pytest.mark.parametrize("after_text", [
+    "A Princess of Mars by Edgar Rice Burroughs Introduction",
+    "A Princess of Mars Foreword",
+    "A Different Book by Edgar Rice Burroughs Foreword",
+    "A Princess of Mars by Edgar Rice Burroughs",
+])
+def test_first_track_preserves_unconfirmed_or_unique_unnumbered_announcement(after_text):
+    before = make_words("Foreword to A Princess of Mars by Edgar Rice Burroughs")
+    notice = make_words("This is a LibriVox recording", start=8)
+    after = make_words(after_text, start=14)
+
+    result = detect_boundaries(before + notice + after, [], is_first_chapter=True)
+
+    assert result.intro.removal_start_seconds > 0
+
+
+def test_duplicate_number_at_detected_heading_is_not_hidden_by_resume_margin():
+    from librivox_trimmer.boundary_detection import BoundarySuggestion, remove_duplicate_first_announcement
+
+    before = make_words("Chapter three of A Princess of Mars by Edgar Rice Burroughs")
+    words = before + [
+        TimedWord("Chapter", 11, 11), TimedWord("III", 11, 11.3),
+    ] + make_words("My Advent on Mars", start=11.8)
+    intro = BoundarySuggestion(
+        11.6, 95, "notice", removal_start_seconds=5.0,
+        notice_only_end_seconds=7.0, notice_end_seconds=11.0,
+        heading_start_seconds=11.0, heading_cut_seconds=before[1].end,
+    )
+
+    result = remove_duplicate_first_announcement(words, intro, retain_book_information=False)
+
+    assert result.removal_start_seconds == 0
+    assert result.heading_cut_seconds is None
+    assert result.heading_start_seconds == 11
 
 
 def test_first_chapter_preserves_unique_title_before_notice():

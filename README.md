@@ -188,8 +188,11 @@ lengths, the extra intro removal margin, and outro silence refinement.
 Preferences are saved in `%LOCALAPPDATA%/LibriVoxTrimmer/settings.json` on Windows. Models
 remain cached in the app-data models folder and are downloaded on first use.
 
-Results for each analysed chapter are remembered, so analysing it again is nearly
-instant. **Clean Up Project** removes a project's remembered results with the project.
+Both single-chapter analysis and **Analyse all chapters** always rerun
+transcription. Previous transcripts are neither reused from disk nor saved for
+future runs. Silence and speech-region measurements remain cached in both modes,
+and downloaded speech models are kept for reuse.
+**Clean Up Project** removes a project's remembered results with the project.
 
 Detection preferences are also stored in each `.lvproj`. Opening a project
 restores its detection preferences; older projects use the current app defaults.
@@ -197,6 +200,26 @@ Saving Preferences updates the current project's detection preferences and the
 app defaults, but never recalculates its saved trim times. Rerun detection to use
 changed detection preferences. Folder changes apply to new projects, not existing
 files. **Restore Defaults** resets the dialog; **Save** applies those defaults.
+
+### Narrator Hotword Experiment
+
+**Settings > Preferences > Advanced > Narrator credit hotwords (experimental)**
+is off by default. When enabled, catalog narrator names are supplied as vocabulary
+hints only to the focused reader-credit retry and its shorter fallback. Initial
+intro/outro transcription, heading retries, and speech-gap recovery stay unhinted.
+Tracks without matched narrator metadata behave as before.
+
+For an A/B comparison, analyse a chapter with the option off, note its credit cut
+and review warnings, then enable the option, save Preferences, and analyse the same
+chapter again. Preview the credit and start of narration in both cases. Include
+unusual names and chapters where the expected name is not spoken. Rerunning analysis
+replaces the current suggestions, so record the baseline before running the hinted case.
+
+Hinted credit retries are freshly transcribed too. The progress message names
+the hotwords when used. Hints may invent
+or bias words; the existing credit-cue and pause checks still apply, and real-audio
+accuracy has not yet been established. This experiment is available in the source
+branch, not the published 0.7.0 beta executable.
 
 ## Projects
 
