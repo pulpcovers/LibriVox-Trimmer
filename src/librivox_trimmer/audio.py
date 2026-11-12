@@ -138,7 +138,7 @@ def refine_outro_boundary_with_silence(
     minimum_silence_seconds: float = 0.35,
     maximum_lookahead_seconds: float = 4.0,
 ) -> float:
-    """Prefer a cut inside an aligned preceding pause, then try a following pause."""
+    """Prefer an aligned preceding pause, keeping a speech margin in either pause path."""
     if candidate_time < 0:
         return candidate_time
 
@@ -161,7 +161,7 @@ def refine_outro_boundary_with_silence(
             and silence_end - silence_start >= minimum_silence_seconds
             and silence_end > candidate_time
         ):
-            return silence_end
+            return silence_end - 0.15
     return candidate_time
 
 

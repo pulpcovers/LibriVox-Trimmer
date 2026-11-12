@@ -368,7 +368,14 @@ def detect_intro_boundary(
     if not retain_reader_credit:
         # Whatever the reader says between the notice and the chapter heading (credit, book title) is front matter.
         _found, front_matter_end, front_matter_heading = _front_matter(words, notice_end)
-        if front_matter_end is not None and front_matter_end > notice_end:
+        if front_matter_end is None and reader_credit_start is not None:
+            _found, earlier_end, earlier_heading = _front_matter(words, notice_only_end)
+            if earlier_end is not None and earlier_heading is not None and sum(
+                _normalize_word(word.text) == "by"
+                for word in words if notice_only_end <= word.start < earlier_heading
+            ) >= 2:
+                front_matter_end, front_matter_heading = earlier_end, earlier_heading
+        if front_matter_end is not None and front_matter_end >= notice_end:
             notice_end = front_matter_end
             heading_start = front_matter_heading
             reader_credit_start = reader_credit_end = reader_credit_prefix_end = None
@@ -518,6 +525,8 @@ def remove_duplicate_first_announcement(
         intro.keep_time_seconds,
         intro.heading_start_seconds if intro.heading_start_seconds is not None else intro.keep_time_seconds,
     )
+    if not retain_book_information and intro.notice_only_end_seconds is not None:
+        after_start = min(after_start, intro.notice_only_end_seconds)
     after = [
         word.text for word in tokens
         if word.end >= after_start
@@ -696,6 +705,15 @@ def needs_repeated_book_title_retry(words: Sequence[TimedWord], intro: BoundaryS
 
 def has_repeated_book_title(words: Sequence[TimedWord], intro: BoundarySuggestion) -> bool:
     return _repeated_book_title_status(words, intro)[1]
+
+
+def has_book_title_after(words: Sequence[TimedWord], book_title: str, after: float) -> bool:
+    title = re.sub(r"\([^)]*\)", " ", book_title)
+    title = " ".join(_normalize_word(token) for token in title.split())
+    if len(title.split()) < 2:
+        return False
+    following = [word for word in words if after <= word.start < after + 14]
+    return bool(_find_phrase_matches(following, _title_variants(title), threshold=90))
 
 
 def _title_variants(normalized_title: str) -> list[str]:

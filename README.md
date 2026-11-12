@@ -166,6 +166,19 @@ app cannot confirm where a credit ends, it keeps the audio and marks the chapter
 **Review intro** rather than risk cutting the chapter title or narration. Check
 these previews and adjust the cut manually if needed.
 
+Current source builds finalize the intro after reader-credit confirmation,
+combining recovered credit/title speech with later chapter-heading evidence.
+Confirmed book-title and author lines before the retained heading are included
+only when an audio pause supports the boundary. An unresolved continuation is
+flagged for review instead of silently treating the reader-credit pause as final.
+If the heading is missing, one short unhinted retry checks the author-to-heading
+transition. A recovered chapter number must agree with the opening number when
+that number was recognized; missing or conflicting evidence keeps the warning.
+If focused, catalog-matched title speech overlaps an earlier heading timestamp,
+the app keeps that speech for finalization rather than truncating it at the
+questionable heading. The same bounded recovery and pause checks still apply.
+This improvement is newer than the published 0.8.0 installer.
+
 ### Preview and Export
 
 - **Play removed intro** plays the proposed removed notice.
@@ -199,6 +212,10 @@ the view stays within the available audio.
 
 Exports use MP3 stream copy and restore ID3 tags. MP3 frame boundaries limit cut
 precision, so listen to uncertain transitions. The app recognizes spoken endings
+near a chapter's end. Current source builds keep a 150 ms margin inside an
+aligned outro pause, including when a transcript places the marker near the
+pause's start; they do not move the cut to the exact speech onset. This margin
+fix is newer than the published 0.8.0 installer. Recognized endings include phrases
 such as "End of Chapter 3" or "End of Part XX" near the end of a track; generic
 phrases such as "The End" are not used as cut markers.
 
@@ -253,6 +270,14 @@ notes. It is available in the current source,
 and in the 0.8.0 beta installer and portable ZIP.
 
 ## Projects
+
+Current source builds can open projects containing unsupported analysis options
+from another branch or version. A **Project opened with warnings** pop-up lists
+options that were ignored; supported settings and saved chapter cuts still load.
+Unknown analysis options are preserved on later saves. If saved analysis settings
+are invalid, current preferences are used instead, with a warning. Invalid project
+structure or unsafe file paths still prevent opening. This compatibility recovery
+is newer than the published 0.8.0 installer.
 
 Use **Project > Save Project** to create a `.lvproj` manifest containing chapter
 locations, audio metadata, and the selected keep ranges. Reopen that file with

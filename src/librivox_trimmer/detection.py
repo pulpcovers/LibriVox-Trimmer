@@ -25,6 +25,7 @@ from librivox_trimmer.boundary_detection import (
     front_matter_pending,
     needs_repeated_book_title_retry,
     has_repeated_book_title,
+    has_book_title_after,
     match_reader_credit_end,
     chapter_heading_number,
     unnumbered_heading_retry_window,
@@ -407,6 +408,7 @@ def _confirm_reader_credit(
     track_path, detection, intro_words, duration, model, safety_gap, report, *, chapter_title="",
     reader_names=(),
     narrator_credit_hotwords=False,
+    book_title="",
 ):
     intro = detection.intro
     if intro is None or intro.reader_credit_start_seconds is None:
@@ -518,12 +520,34 @@ def _confirm_reader_credit(
         else:
             confirmed = False
         if confirmed:
+            later_heading = next((
+                word.start for word in intro_words
+                if word.start >= credit_end and word.text.strip()[:1].isupper()
+                and chapter_heading_number(intro_words, word.start) is not None
+            ), crop_end)
+            heading_conflicts_with_title = (
+                has_book_title_after(focused_words, book_title, credit_end)
+                and any(
+                    credit_end <= word.start <= later_heading < word.end
+                    and 0 < word.end - word.start <= 1.5
+                    for word in focused_words
+                )
+            )
+            if heading_conflicts_with_title:
+                later_heading = crop_end
+            merge_end = min(crop_end, later_heading)
+            intro_words[:] = sorted(
+                [word for word in intro_words if word.end <= notice_end or word.start >= merge_end]
+                + [word for word in focused_words if notice_end <= word.start < merge_end],
+                key=lambda word: (word.start, word.end),
+            )
             confirmed_intro = replace(
                 intro, notice_end_seconds=credit_end, keep_time_seconds=pause,
                 reader_credit_end_seconds=credit_end,
+                heading_start_seconds=None if heading_conflicts_with_title else intro.heading_start_seconds,
             )
             confirmed_intro = remove_duplicate_first_announcement(
-                candidate_words, confirmed_intro, retain_book_information=False,
+                intro_words, confirmed_intro, retain_book_information=False,
             )
             return replace(detection, intro=confirmed_intro)
     notice_end = intro.notice_only_end_seconds
@@ -541,6 +565,67 @@ def _confirm_reader_credit(
     )), "intro", reason)
 
 
+def _finalize_intro_front_matter(detection, words, *, chapter_title="", book_title="", audio=None, intro_end=None, report=None):
+    intro = detection.intro
+    if intro is None or intro.reader_credit_end_seconds is None:
+        return detection
+    credit_end = intro.reader_credit_end_seconds
+    heading_start = min((
+        word.start for word in words if word.start >= credit_end
+        and word.text.strip()[:1].isupper() and chapter_heading_number(words, word.start) is not None
+    ), default=credit_end + 14)
+    continuation = [word for word in words if credit_end <= word.start < heading_start]
+    before_heading = [word for word in words if word.start < heading_start]
+    title_found = has_repeated_book_title(before_heading, intro) or has_book_title_after(continuation, book_title, credit_end)
+    if not title_found or not any(word.text.strip(" .,:;!?").casefold() == "by" for word in continuation):
+        return detection
+    candidate = detect_intro_boundary(words, chapter_title=chapter_title)
+    if (candidate is None or candidate.heading_start_seconds is None) and audio is not None and intro_end is not None:
+        author_cue = next(word for word in continuation if word.text.strip(" .,:;!?").casefold() == "by")
+        start = max(credit_end, author_cue.end - 0.5)
+        end = min(intro_end, start + 8.0)
+        if end - start >= 3.0:
+            if report is not None:
+                report("Checking the heading after the book title and author separately...")
+            try:
+                recovered = audio.words("intro_continuation_heading", start, end)
+            except (OSError, RuntimeError, ValueError):
+                recovered = []
+            combined = sorted(
+                [word for word in words if word.end <= start or word.start >= end] + recovered,
+                key=lambda word: (word.start, word.end),
+            )
+            recovered_candidate = detect_intro_boundary(combined, chapter_title=chapter_title)
+            expected_number = next((
+                chapter_heading_number(words, word.start)
+                for word in words if word.start < (intro.notice_start_seconds or 0)
+                and chapter_heading_number(words, word.start) is not None
+            ), None)
+            if (
+                recovered_candidate is not None and recovered_candidate.heading_start_seconds is not None
+                and recovered_candidate.notice_end_seconds > credit_end
+                and (
+                    expected_number is None
+                    or chapter_heading_number(combined, recovered_candidate.heading_start_seconds) == expected_number
+                )
+            ):
+                words[:] = combined
+                candidate = recovered_candidate
+    if candidate is not None and candidate.heading_start_seconds is not None and candidate.notice_end_seconds > credit_end:
+        finalized = replace(
+            intro, notice_end_seconds=candidate.notice_end_seconds,
+            keep_time_seconds=candidate.keep_time_seconds, heading_start_seconds=candidate.heading_start_seconds,
+        )
+        finalized = remove_duplicate_first_announcement(words, finalized, retain_book_information=False)
+        finalized = replace(finalized, heading_start_seconds=candidate.heading_start_seconds)
+        return replace(detection, intro=finalized)
+    return _with_review_reason(
+        detection, "intro",
+        "Book title and author speech follows the confirmed reader credit, but its ending could not be confirmed. "
+        "Additional opening audio was retained. Preview the intro before exporting.",
+    )
+
+
 def _refine_intro(track_path, detection, intro_words, safety_gap, report, title):
     intro = detection.intro
     if intro is None:
@@ -551,6 +636,18 @@ def _refine_intro(track_path, detection, intro_words, safety_gap, report, title)
     refined_resume = None
     if intro.heading_start_seconds is not None:
         refined_resume = refine_cut_before_heading(track_path, intro.heading_start_seconds)
+        if refined_resume is not None and refined_resume < notice_end:
+            refined_resume = None
+            heading_limit = next((
+                intro_words[index + 1].end + 0.1
+                for index, word in enumerate(intro_words[:-1])
+                if abs(word.start - intro.heading_start_seconds) <= 0.05
+                and chapter_heading_number(intro_words, word.start) is not None
+            ), None)
+            if heading_limit is not None and heading_limit > notice_end:
+                refined_resume = refine_intro_resume_start(track_path, notice_end, heading_limit)
+                if refined_resume is not None and refined_resume < notice_end:
+                    refined_resume = None
         if refined_resume is None and notice_end < intro.heading_start_seconds:
             refined_resume = refine_short_pause_before_heading(
                 track_path, notice_end, intro.heading_start_seconds,
@@ -709,7 +806,15 @@ def _analyze_track(
         settings.intro_safety_gap_seconds, report, chapter_title=title,
         reader_names=reader_names,
         narrator_credit_hotwords=settings.narrator_credit_hotwords,
+        book_title=book_title,
     )
+    if not is_first_chapter:
+        with TemporaryDirectory(prefix="librivox-continuation-") as temporary:
+            detection = _finalize_intro_front_matter(
+                detection, intro_words, chapter_title=title, book_title=book_title,
+                audio=_AnalysisAudio(track_path, Path(temporary), model), intro_end=intro_end,
+                report=report,
+            )
     detection = _refine_intro(
         track_path, detection, intro_words, settings.intro_safety_gap_seconds, report, title,
     )

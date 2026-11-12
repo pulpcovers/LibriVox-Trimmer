@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Mapping
@@ -66,6 +66,8 @@ class ProjectDocument:
     tracks: tuple[ProjectTrack, ...]
     detection_settings: DetectionSettings | None = None
     book_metadata: dict | None = None
+    load_warnings: tuple[str, ...] = ()
+    extra_detection_settings: dict | None = None
 
 
 def project_assets_dir(project_path: Path) -> Path:
@@ -145,8 +147,10 @@ def save_project(
 
     now = datetime.now(timezone.utc).isoformat()
     created_at = now
+    extra_detection_settings = {}
     if project_path.exists():
         existing = load_project(project_path, allow_network_paths=True)
+        extra_detection_settings = existing.extra_detection_settings or {}
         created_at = existing.created_at
         if detection_settings is None:
             detection_settings = existing.detection_settings
@@ -214,7 +218,10 @@ def save_project(
         "updated_at": now,
         "managed_audio_dir": managed_reference,
         "tracks": serialized_tracks,
-        "detection_settings": detection_settings.to_dict() if detection_settings else None,
+        "detection_settings": (
+            {**extra_detection_settings, **(detection_settings.to_dict() if detection_settings else {})}
+            if detection_settings is not None or extra_detection_settings else None
+        ),
         "book_metadata": book_metadata,
     }
     project_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +246,27 @@ def save_project(
             temporary_path.unlink(missing_ok=True)
         raise
     return load_project(project_path, allow_network_paths=True)
+
+
+def _read_project_detection_settings(values):
+    if values is None:
+        return None, (), None
+    if not isinstance(values, dict):
+        return None, ("Saved analysis settings have an invalid format; current preferences will be used.",), None
+    known = {item.name for item in fields(DetectionSettings)}
+    extra = {key: value for key, value in values.items() if key not in known}
+    warnings = []
+    if extra:
+        warnings.append(
+            "Unsupported analysis options were ignored: " + ", ".join(sorted(extra))
+            + ". These options are preserved when the project is saved."
+        )
+    try:
+        settings = DetectionSettings.from_dict({key: value for key, value in values.items() if key in known})
+    except (TypeError, ValueError) as error:
+        settings = None
+        warnings.append(f"Saved analysis settings could not be applied: {error} Current preferences will be used.")
+    return settings, tuple(warnings), extra or None
 
 
 def load_project(project_path: Path, *, allow_network_paths: bool = False) -> ProjectDocument:
@@ -317,6 +345,9 @@ def load_project(project_path: Path, *, allow_network_paths: bool = False) -> Pr
         and book_metadata["chapters"]
     ):
         book_metadata = None
+    detection_settings, load_warnings, extra_detection_settings = _read_project_detection_settings(
+        payload.get("detection_settings"),
+    )
     return ProjectDocument(
         path=project_path,
         name=str(payload.get("name", project_path.stem)),
@@ -325,11 +356,10 @@ def load_project(project_path: Path, *, allow_network_paths: bool = False) -> Pr
         updated_at=str(payload.get("updated_at", "")),
         managed_audio_dir=managed_audio_dir,
         tracks=tuple(tracks),
-        detection_settings=(
-            DetectionSettings.from_dict(payload["detection_settings"])
-            if payload.get("detection_settings") is not None else None
-        ),
+        detection_settings=detection_settings,
         book_metadata=book_metadata,
+        load_warnings=load_warnings,
+        extra_detection_settings=extra_detection_settings,
     )
 
 

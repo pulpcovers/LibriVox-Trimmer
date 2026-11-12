@@ -63,6 +63,46 @@ def test_download_finished_starts_analyze_all_only_when_preference_is_enabled(wi
     )
 
 
+@pytest.mark.parametrize("problem,expected_model", [({"verify_boundaries": True}, "tiny.en"), ({"model_size": "missing-model"}, "base.en")])
+def test_open_project_warns_about_optional_settings_and_still_loads_chapters(window, tmp_path, monkeypatch, problem, expected_model):
+    import json
+    from librivox_trimmer.project import TrackReview, save_project
+
+    metadata = lambda path: (120.0, path.stem, "Reader")
+    monkeypatch.setattr(project_module, "read_track", metadata)
+    monkeypatch.setattr(main_window, "read_track", metadata)
+    chapter = tmp_path / "chapter.mp3"
+    chapter.write_bytes(b"placeholder")
+    path = tmp_path / "Book.lvproj"
+    save_project(
+        path, [chapter], detection_settings=DetectionSettings(model_size="tiny.en"),
+        reviews={chapter.resolve(): TrackReview(3, 110)},
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["detection_settings"].update(problem)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    original = path.read_bytes()
+    warnings = []
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(path), ""))
+    monkeypatch.setattr(main_window.QMessageBox, "warning", lambda _parent, title, text, *_args, **_kwargs: warnings.append((title, text)))
+    monkeypatch.setattr(main_window.QMessageBox, "critical", lambda *_args: pytest.fail("A recoverable settings issue should not be fatal"))
+    monkeypatch.setattr(window, "_offer_import_external_tracks", lambda: None)
+
+    window._open_project()
+
+    assert window._project_path == path.resolve()
+    assert window._tracks == [chapter.resolve()]
+    assert window._review(chapter).keep_range == (3, 110)
+    assert window._project_detection.model_size == expected_model
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Project opened with warnings"
+    if "verify_boundaries" in problem:
+        assert "verify_boundaries" in warnings[0][1]
+    else:
+        assert "current preferences" in warnings[0][1].lower()
+    assert path.read_bytes() == original
+
+
 def test_open_project_dialog_starts_in_app_projects_folder(tmp_path, monkeypatch):
     application = QApplication.instance() or QApplication([])
     project_directory = tmp_path / "local app data" / "Projects"

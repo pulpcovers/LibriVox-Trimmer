@@ -216,6 +216,173 @@ def test_omitted_credit_gets_one_short_retry_without_losing_recovered_heading(tm
         assert "protect narration" in result.intro_review_reason
 
 
+@pytest.mark.parametrize("heading_present", [True, False])
+@pytest.mark.parametrize("pause_supported", [True, False])
+def test_credit_confirmation_preserves_title_author_and_later_heading_for_finalization(tmp_path, monkeypatch, heading_present, pause_supported):
+    opening = _timed("Chapter three of The Example Book", 0, 0.3)
+    notice = _timed("This is a LibriVox recording.", 4, 0.3)
+    credit = _timed("Reading by A Reader.", 7, 0.5)
+    book = _timed("The Example Book by An Author.", 11, 0.5)
+    heading = _timed("Chapter three The Voyage", 16, 0.5) if heading_present else []
+    initial = opening + notice + credit + heading
+    original = detection.detect_boundaries(initial, [], reader_names=["A Reader"])
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", lambda *_args, **_kwargs: credit + book)
+    monkeypatch.setattr(detection, "reader_credit_pause", lambda *_args: (9.2, 10.0))
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: 9.5)
+    monkeypatch.setattr(detection, "refine_cut_before_heading", lambda *_args: 15.5 if pause_supported else None)
+    monkeypatch.setattr(detection, "refine_short_pause_before_heading", lambda *_args: None)
+
+    confirmed = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", original, initial, 100, object(), 0.6, lambda _message: None,
+        reader_names=["A Reader"],
+    )
+    finalized = detection._finalize_intro_front_matter(
+        confirmed, initial, chapter_title="The Voyage", book_title="The Example Book",
+    )
+    result = detection._refine_intro(tmp_path / "chapter.mp3", finalized, initial, 0.6, lambda _message: None, "Chapter 3")
+
+    assert all(word in initial for word in book)
+    assert all(word in initial for word in heading)
+    if heading_present and pause_supported:
+        assert result.intro.removal_start_seconds == 0
+        assert result.intro.keep_time_seconds == 15.5
+        assert result.intro.notice_end_seconds == book[-1].end
+        assert result.intro.heading_start_seconds == heading[0].start
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds <= 9.5
+        assert result.intro_review_reason
+
+
+@pytest.mark.parametrize("tail", [
+    "Part two of The Example Book by An Author.",
+    "Chapter three The Example Book by An Author.",
+    "We talked about The Example Book without naming its author.",
+    "The voyage was delayed by a storm.",
+])
+def test_intro_finalization_preserves_retained_heading_and_ordinary_narration(tail):
+    intro = BoundarySuggestion(
+        9.5, 95, "notice", notice_start_seconds=4, notice_only_end_seconds=6,
+        notice_end_seconds=9, reader_credit_start_seconds=7, reader_credit_end_seconds=9,
+    )
+    original = BoundaryDetection(intro, None)
+    words = _timed(tail, 11, 0.5)
+
+    result = detection._finalize_intro_front_matter(original, words, book_title="The Example Book")
+
+    assert result == original
+
+
+@pytest.mark.parametrize("later_pause", [18.5, None, 15.0])
+def test_heading_refinement_never_uses_a_pause_before_confirmed_author_end(tmp_path, monkeypatch, later_pause):
+    intro = BoundarySuggestion(
+        18, 95, "notice", notice_end_seconds=17.3, notice_only_end_seconds=9,
+        heading_start_seconds=17.2,
+    )
+    words = [TimedWord("Chapter", 17.2, 18.6), TimedWord("three", 18.6, 20.0)]
+    monkeypatch.setattr(detection, "refine_cut_before_heading", lambda *_args: 15.9)
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: later_pause)
+
+    result = detection._refine_intro(
+        tmp_path / "chapter.mp3", BoundaryDetection(intro, None), words, 0.6, lambda _message: None, "Chapter 3",
+    )
+
+    if later_pause == 18.5:
+        assert result.intro.keep_time_seconds == 18.5
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro_review_reason
+
+
+@pytest.mark.parametrize("retry_number", ["sixteen", "seventeen", None, "decode_error"])
+def test_unresolved_title_author_continuation_gets_one_unhinted_heading_retry(retry_number):
+    intro = BoundarySuggestion(
+        13.5, 95, "notice", notice_start_seconds=5, notice_only_end_seconds=9.4,
+        notice_end_seconds=12.9, reader_credit_start_seconds=10.6, reader_credit_end_seconds=12.9,
+    )
+    words = _timed("Chapter sixteen of The Example Book", 0, 0.5)
+    words += _timed("This is a LibriVox recording.", 5, 0.5)
+    words += _timed("Reading by A Reader.", 10, 0.5)
+    words += _timed("The Example Book by An Author.", 13, 0.5)
+    before = list(words)
+    calls = []
+
+    class Audio:
+        def words(self, name, start, end, **options):
+            calls.append((name, start, end, options))
+            if retry_number == "decode_error":
+                raise RuntimeError("Could not decode the recovery window")
+            recovered = _timed("by An Author.", start, 0.5)
+            if retry_number:
+                recovered += _timed("Chapter " + retry_number + " The Ring", 19, 0.5)
+            return recovered
+
+    messages = []
+    result = detection._finalize_intro_front_matter(
+        BoundaryDetection(intro, None), words, chapter_title="The Ring", book_title="The Example Book",
+        audio=Audio(), intro_end=60, report=messages.append,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] == "intro_continuation_heading"
+    assert calls[0][2] - calls[0][1] == 8
+    assert calls[0][3] == {}
+    assert len(messages) == 1
+    if retry_number == "sixteen":
+        assert result.intro.heading_start_seconds == 19
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds == 13.5
+        assert result.intro_review_reason
+        assert words == before
+
+
+@pytest.mark.parametrize("recovered_number", ["21", "22", None])
+def test_credit_retry_does_not_truncate_book_information_at_conflicting_heading_timestamp(tmp_path, monkeypatch, recovered_number):
+    opening = _timed("Chapter 21 of The Example Book", 0, 0.5)
+    notice = _timed("This is a LibriVox recording.", 6, 0.5)
+    credit = _timed("Reading by A Reader.", 10, 0.5)
+    false_heading = [TimedWord("Chapter", 13.2, 14.5), TimedWord("21", 14.5, 14.8)]
+    words = opening + notice + credit + false_heading
+    focused = credit + [
+        TimedWord("The", 12.9, 14.0), TimedWord("Example", 14.0, 14.5),
+        TimedWord("Book", 14.5, 15.0), TimedWord("by", 15.0, 16.8),
+        TimedWord("An", 16.8, 17.1), TimedWord("Author.", 17.1, 17.6),
+    ]
+    monkeypatch.setattr(detection, "extract_analysis_slice", lambda _source, output, *_times: output)
+    monkeypatch.setattr(detection, "transcribe_words", lambda *_args, **_kwargs: focused)
+    monkeypatch.setattr(detection, "reader_credit_pause", lambda *_args: (12.2, 13.0))
+    monkeypatch.setattr(detection, "refine_intro_resume_start", lambda *_args: 12.5)
+    original = detection.detect_boundaries(words, [], reader_names=["A Reader"])
+
+    confirmed = detection._confirm_reader_credit(
+        tmp_path / "chapter.mp3", original, words, 100, object(), 0.6, lambda _message: None,
+        reader_names=["A Reader"], book_title="The Example Book",
+    )
+    assert focused[-1] in words
+    assert not any(word in words for word in false_heading)
+
+    class Audio:
+        def words(self, _name, start, end):
+            recovered = _timed("by An Author.", start, 0.5)
+            if recovered_number:
+                recovered += _timed("Chapter " + recovered_number + " The Escape", 19, 0.5)
+            return recovered
+
+    result = detection._finalize_intro_front_matter(
+        confirmed, words, book_title="The Example Book", chapter_title="The Escape", audio=Audio(), intro_end=60,
+    )
+
+    if recovered_number == "21":
+        assert result.intro.heading_start_seconds == 19
+        assert result.intro.notice_end_seconds > 12
+        assert result.intro_review_reason is None
+    else:
+        assert result.intro.keep_time_seconds == 12.5
+        assert result.intro_review_reason
+
+
 def _credit_case(
     monkeypatch, credit_words, tail_words, pauses, resume, chapter_title="", reader_names=(),
     narrator_credit_hotwords=False,

@@ -667,6 +667,13 @@ class MainWindow(QMainWindow):
         self._has_missing_tracks = bool(missing_paths)
         self._add_tracks(existing_paths, persist=False)
         self._url_input.setText(project.source_url)
+        if project.load_warnings:
+            QMessageBox.warning(
+                self,
+                "Project opened with warnings",
+                "The project was opened, but some saved analysis settings could not be applied. "
+                "Saved chapter cuts have been retained.\n\n" + "\n".join(project.load_warnings),
+            )
         if missing_paths:
             missing_names = ", ".join(path.name for path in missing_paths[:5])
             remainder = len(missing_paths) - 5

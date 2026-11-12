@@ -204,7 +204,7 @@ def test_build_trim_command_rejects_invalid_interval(tmp_path, start, end):
         build_trim_command("ffmpeg", Path("input.mp3"), tmp_path / "out.mp3", start, end)
 
 
-def test_refine_outro_boundary_moves_to_speech_after_aligned_pause(tmp_path, monkeypatch):
+def test_refine_outro_boundary_stays_inside_aligned_following_pause(tmp_path, monkeypatch):
     source = tmp_path / "chapter.mp3"
     source.touch()
     monkeypatch.setattr(audio, "read_track", lambda _path: (200, "Chapter", "Reader"))
@@ -220,7 +220,17 @@ def test_refine_outro_boundary_moves_to_speech_after_aligned_pause(tmp_path, mon
 
     refined = refine_outro_boundary_with_silence(source, 100.0)
 
-    assert refined == pytest.approx(101.9)
+    assert refined == pytest.approx(101.75)
+
+
+def test_refine_outro_keeps_margin_when_timestamp_starts_inside_long_pause(tmp_path, monkeypatch):
+    monkeypatch.setattr(audio, "read_track", lambda _path: (257.58, "Chapter", "Reader"))
+    monkeypatch.setattr(audio, "_detect_silences", lambda *_args: [(244.161633, 246.727982)])
+
+    refined = refine_outro_boundary_with_silence(tmp_path / "chapter.mp3", 244.602948)
+
+    assert refined == pytest.approx(246.577982)
+    assert 244.161633 < refined < 246.727982
 
 
 @pytest.mark.parametrize("candidate,pause", [

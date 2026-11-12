@@ -452,6 +452,33 @@ def test_normalized_title_protects_heading_after_reader_credit(title):
     assert result.notice_end_seconds < heading[0].start
 
 
+@pytest.mark.parametrize("opening_number,later_number", [("twelve", "twelve"), ("eighteen", "fifteen"), ("twenty", "twenty")])
+def test_repeated_title_before_provisional_resume_confirms_duplicate_despite_misheard_number(opening_number, later_number):
+    opening = make_words("Chapter " + opening_number + " of The Princess and the Goblin")
+    notice = make_words("This LibriVox recording is in the public domain.", start=5)
+    credit = make_words("Reading by Ann Dementa,", start=9)
+    repeated = make_words("The Princess and the Goblin by George Macdonald.", start=10.8)
+    heading = make_words("Chapter " + later_number + " Woven and then Spun", start=15)
+
+    result = detect_boundaries(opening + notice + credit + repeated + heading, [])
+
+    assert result.intro.removal_start_seconds == 0
+    assert result.intro.reader_credit_start_seconds is None
+    assert result.intro.heading_start_seconds is not None
+    assert result.intro.notice_end_seconds == pytest.approx(repeated[-1].end)
+
+
+def test_book_information_scan_does_not_bypass_plain_credit_confirmation():
+    notice = make_words("This is a LibriVox recording.")
+    credit = make_words("Reading by A Reader.", start=3)
+    heading = make_words("Chapter fifteen Woven and then Spun", start=8)
+
+    result = detect_intro_boundary(notice + credit + heading)
+
+    assert result.reader_credit_start_seconds == credit[0].start
+    assert result.reader_credit_end_seconds == credit[-1].end
+
+
 def test_chapter_mentioned_in_lower_case_narration_is_not_treated_as_a_heading():
     notice = make_words("This is a LibraVox recording.")
     narration = make_words("He had read in chapter three of that book", start=3)

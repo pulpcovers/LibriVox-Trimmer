@@ -57,7 +57,8 @@ class SettingsDialog(QDialog):
         self._refinement.setToolTip(
             "Prefer a cut inside a nearby pause before the spoken outro. "
             "If no suitable preceding pause is found, check for a pause starting near "
-            "the detected cut and move to its end. If neither is found, leave the cut unchanged. "
+            "the detected cut and move inside it. Keep a short margin before speech resumes. "
+            "If neither is found, leave the cut unchanged. "
             "Preview the result: silence alone does not guarantee a safe cut."
         )
         advanced_form.addRow("Intro search window", self._intro_window)

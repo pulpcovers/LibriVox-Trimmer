@@ -285,6 +285,55 @@ def test_project_preserves_detection_preferences_on_resave(tmp_path, monkeypatch
     assert load_project(project_path).detection_settings == preferences
 
 
+def test_project_opens_with_warning_for_unsupported_branch_settings(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
+    chapter = tmp_path / "chapter.mp3"
+    chapter.write_bytes(b"audio")
+    path = tmp_path / "Book.lvproj"
+    preferences = DetectionSettings(model_size="tiny.en", intro_window_seconds=90)
+    save_project(path, [chapter], detection_settings=preferences, reviews={chapter.resolve(): TrackReview(3, 110)})
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["detection_settings"]["verify_boundaries"] = True
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    original = path.read_bytes()
+
+    project = load_project(path)
+
+    assert project.detection_settings == preferences
+    assert project.tracks[0].review.keep_range == (3, 110)
+    assert any("verify_boundaries" in warning for warning in project.load_warnings)
+    assert path.read_bytes() == original
+    save_project(
+        path, [chapter], detection_settings=project.detection_settings,
+        reviews={chapter.resolve(): project.tracks[0].review},
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["detection_settings"]["verify_boundaries"] is True
+    assert load_project(path).tracks[0].review.keep_range == (3, 110)
+
+
+@pytest.mark.parametrize("settings", [{"model_size": "missing-model"}, {"intro_window_seconds": -1}, "invalid"])
+def test_project_keeps_tracks_and_cuts_when_optional_detection_settings_are_invalid(tmp_path, monkeypatch, settings):
+    import json
+
+    monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
+    chapter = tmp_path / "chapter.mp3"
+    chapter.write_bytes(b"audio")
+    path = tmp_path / "Book.lvproj"
+    save_project(path, [chapter], reviews={chapter.resolve(): TrackReview(3, 110)})
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["detection_settings"] = settings
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    project = load_project(path)
+
+    assert project.detection_settings is None
+    assert project.tracks[0].review.keep_range == (3, 110)
+    assert project.load_warnings
+
+
 def test_project_round_trips_interior_notice_start(tmp_path, monkeypatch):
     monkeypatch.setattr(project_module, "read_track", stub_track_metadata)
     chapter = tmp_path / "chapter.mp3"
